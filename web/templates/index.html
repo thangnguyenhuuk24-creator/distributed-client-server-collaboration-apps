@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Distributed Streaming Collaboration App</title>
+    <link rel="stylesheet" href="/css/style.css?v=3">
+</head>
+<body>
+    <!-- Màn hình Đăng nhập (Hiện khi chưa kết nối) -->
+    <div id="login-modal" class="modal-overlay">
+        <div class="modal-card">
+            <h2>Đăng Nhập Hệ Thống Mạng</h2>
+            <p>Ứng dụng cộng tác thời gian thực trên UDP Streaming</p>
+            <div class="form-group">
+                <label for="username-input">Tên hiển thị:</label>
+                <input type="text" id="username-input" placeholder="Nhập tên hiển thị của bạn" autofocus>
+            </div>
+            <button id="login-btn" class="btn primary-btn">Tham gia mạng</button>
+        </div>
+    </div>
+
+    <!-- Giao diện chính -->
+    <div class="app-container">
+        <!-- Sidebar bên trái: Thông tin người dùng & Peers -->
+        <aside class="sidebar">
+            <div class="user-profile">
+                <div class="status-indicator online"></div>
+                <div>
+                    <h3 id="display-user">Chưa kết nối</h3>
+                    <span id="display-session" class="sub-text">Session: --</span>
+                </div>
+            </div>
+
+            <div class="peers-section">
+                <h4>NGƯỜI DÙNG ONLINE (<span id="peer-count">0</span>)</h4>
+                <ul id="peer-list" class="peer-list">
+                    <!-- Danh sách peer render bằng JS -->
+                </ul>
+            </div>
+
+            <section class="transfer-section" aria-live="polite">
+                <h4>TIẾN ĐỘ TRUYỀN FILE (<span id="transfer-count">0</span>)</h4>
+                <div id="transfer-list">
+                    <p class="empty-hint">Chưa có file đang truyền.</p>
+                </div>
+            </section>
+
+        </aside>
+
+        <!-- Khung nội dung chính: Chat Streams -->
+        <main class="chat-area">
+            <!-- Header khung chat & chọn Stream -->
+            <header class="chat-header">
+                <div>
+                    <h2 id="active-chat-title">Kênh Chung (Broadcast)</h2>
+                    <span id="active-stream-badge" class="badge">Stream ID: 0</span>
+                </div>
+                <div class="stream-selector">
+                    <button class="stream-tab active" data-stream="0">Kênh Chung</button>
+                    <button class="stream-tab" data-stream="1">Kênh Riêng</button>
+                </div>
+            </header>
+
+            <!-- Khung danh sách tin nhắn -->
+            <div id="messages-container" class="messages-container">
+                <!-- Tin nhắn render bằng JS -->
+            </div>
+
+            <!-- Thanh nhập tin nhắn và gửi file -->
+            <footer class="chat-input-bar">
+                <input type="text" id="message-input" placeholder="Nhập tin nhắn..." autocomplete="off">
+                <button id="send-msg-btn" class="btn primary-btn">Gửi</button>
+                
+                <div class="file-input-wrapper">
+                    <input type="file" id="file-input">
+                    <button id="send-file-btn" class="btn secondary-btn">Gửi tệp</button>
+                </div>
+            </footer>
+        </main>
+    </div>
+
+    <script src="/js/app.js?v=4"></script>
+</body>
+</html>

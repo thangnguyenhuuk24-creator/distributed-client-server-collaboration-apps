@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="vi">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>LAN Server Dashboard</title>
+    <link rel="stylesheet" href="/static/dashboard.css">
+    <script src="/static/dashboard.js" defer></script>
+</head>
+<body>
+    <div class="page-shell">
+        <header class="topbar">
+            <div class="brand">
+                <div class="brand-mark">N</div>
+                <div>
+                    <p class="eyebrow">NETWORK APP · SELF-HOSTED LAN</p>
+                    <h1>Server dashboard</h1>
+                </div>
+            </div>
+            <div class="server-state">
+                <span class="status-dot"></span>
+                <span id="server-status">Connecting...</span>
+                <span class="separator">·</span>
+                <span>Updated <time id="last-updated">--</time></span>
+                <button id="server-toggle" class="button primary" type="button">Stop server</button>
+            </div>
+        </header>
+
+        <main>
+            <section class="intro">
+                <div>
+                    <p class="eyebrow">OPERATIONS OVERVIEW</p>
+                    <h2>Your LAN collaboration server, at a glance.</h2>
+                    <p class="muted">Presence and relay telemetry only. Message contents are never recorded here.</p>
+                </div>
+                <div class="uptime-panel">
+                    <span class="muted">SERVER UPTIME</span>
+                    <strong id="uptime">--</strong>
+                </div>
+            </section>
+
+            <section class="metric-grid" aria-label="Server statistics">
+                <article class="metric-card primary">
+                    <span>ONLINE NOW</span>
+                    <strong id="online-count">0</strong>
+                    <small>Connected users</small>
+                </article>
+                <article class="metric-card">
+                    <span>LOGINS ACCEPTED</span>
+                    <strong id="successful-logins">0</strong>
+                    <small>Since server start</small>
+                </article>
+                <article class="metric-card">
+                    <span>CHAT / FILE RELAYS</span>
+                    <strong id="data-relays">0 / 0</strong>
+                    <small>Chat · file datagrams delivered</small>
+                </article>
+                <article class="metric-card">
+                    <span>GLOBAL / PRIVATE CHAT</span>
+                    <strong id="chat-types">0 / 0</strong>
+                    <small>Successfully forwarded</small>
+                </article>
+                <article class="metric-card">
+                    <span>UDP THROUGHPUT</span>
+                    <strong id="throughput">0 B/s</strong>
+                    <small id="packet-throughput">0 packets/s · 0 file packets/s</small>
+                </article>
+                <article class="metric-card">
+                    <span>RELAY TRAFFIC</span>
+                    <strong id="relay-bytes">0 B</strong>
+                    <small id="relay-drops">0 dropped</small>
+                </article>
+            </section>
+
+            <section class="endpoint-grid">
+                <article class="panel endpoint-card">
+                    <div class="panel-heading">
+                        <div>
+                            <p class="eyebrow">CONTROL PLANE</p>
+                            <h3>TCP login &amp; presence</h3>
+                        </div>
+                        <span class="protocol-tag tcp">TCP</span>
+                    </div>
+                    <code id="tcp-endpoint">--</code>
+                    <p>Listening on <span id="tcp-address">--</span>; persistent client connections and online roster updates.</p>
+                </article>
+                <article class="panel endpoint-card">
+                    <div class="panel-heading">
+                        <div>
+                            <p class="eyebrow">DATA PLANE</p>
+                            <h3>UDP data relay</h3>
+                        </div>
+                        <span class="protocol-tag udp">UDP</span>
+                    </div>
+                    <code id="udp-endpoint">--</code>
+                    <p>Listening on <span id="udp-address">--</span>; chat and file packets are relayed here.</p>
+                </article>
+            </section>
+
+            <section class="content-grid">
+                <article class="panel users-panel">
+                    <div class="panel-heading">
+                        <div>
+                            <p class="eyebrow">LIVE PRESENCE</p>
+                            <h3>Connected users <span class="count-pill" id="users-label">0</span></h3>
+                        </div>
+                        <span class="muted small">TCP session + UDP endpoint</span>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>USER</th>
+                                    <th>SESSION</th>
+                                    <th>IP ADDRESS</th>
+                                    <th>TCP PEER PORT</th>
+                                    <th>ACTIVE UDP PORT</th>
+                                    <th>STATUS</th>
+                                    <th>CONNECTED</th>
+                                    <th>ACTION</th>
+                                </tr>
+                            </thead>
+                            <tbody id="users-body">
+                                <tr><td colspan="8" class="empty-state">Waiting for clients...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </article>
+
+                <article class="panel activity-panel">
+                    <div class="panel-heading">
+                        <div>
+                            <p class="eyebrow">AUDIT TRAIL</p>
+                            <h3>Recent activity</h3>
+                        </div>
+                        <div class="button-row">
+                            <a class="button" href="/api/logs/export">Export</a>
+                            <button id="clear-logs" class="button" type="button">Clear</button>
+                        </div>
+                    </div>
+                    <div id="events-list" class="events-list">
+                        <p class="empty-state">No activity yet.</p>
+                    </div>
+                </article>
+            </section>
+
+            <section class="panel transfers-panel">
+                <div class="panel-heading">
+                    <div>
+                        <p class="eyebrow">RELIABLE FILE STREAMS</p>
+                        <h3>Relayed file transfers</h3>
+                    </div>
+                    <span class="muted small">Chunk ACKs and retransmissions</span>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>FILE</th>
+                                <th>SIZE</th>
+                                <th>SENDER → RECIPIENT</th>
+                                <th>FORWARDED / ACKED</th>
+                                <th>PROGRESS</th>
+                                <th>RETRIES</th>
+                                <th>STATUS</th>
+                            </tr>
+                        </thead>
+                        <tbody id="transfers-body">
+                            <tr><td colspan="7" class="empty-state">No relayed file transfers yet.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <footer>Local-only control panel · Refreshes every 2 seconds · File names and transfer metadata only; payloads are not stored</footer>
+        </main>
+    </div>
+</body>
+</html>

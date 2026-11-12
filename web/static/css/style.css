@@ -1,0 +1,382 @@
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+body {
+    background-color: #1a1b1e;
+    color: #e1e2e6;
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* Modal Login */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.75);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+.modal-card {
+    background: #25262b;
+    padding: 30px;
+    border-radius: 8px;
+    width: 380px;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+    text-align: center;
+}
+
+.modal-card h2 {
+    margin-bottom: 8px;
+    color: #4dabf7;
+}
+
+.modal-card p {
+    font-size: 13px;
+    color: #909296;
+    margin-bottom: 20px;
+}
+
+.form-group {
+    text-align: left;
+    margin-bottom: 20px;
+}
+
+.form-group label {
+    display: block;
+    font-size: 13px;
+    margin-bottom: 6px;
+    color: #c1c2c5;
+}
+
+.form-group input {
+    width: 100%;
+    padding: 10px;
+    border-radius: 4px;
+    border: 1px solid #373a40;
+    background: #1a1b1e;
+    color: #fff;
+    outline: none;
+}
+
+/* Layout App */
+.app-container {
+    display: flex;
+    height: 100vh;
+}
+
+/* Sidebar */
+.sidebar {
+    width: 320px;
+    background: #25262b;
+    border-right: 1px solid #2c2e33;
+    display: flex;
+    flex-direction: column;
+}
+
+.user-profile {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 20px;
+    background: #2c2e33;
+}
+
+.status-indicator {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #fa5252;
+}
+
+.status-indicator.online {
+    background: #40c057;
+}
+
+.sub-text {
+    font-size: 12px;
+    color: #909296;
+}
+
+.peers-section, .transfer-section {
+    padding: 16px;
+    overflow-y: auto;
+}
+
+.peers-section {
+    flex: 1;
+    min-height: 120px;
+}
+
+.transfer-section {
+    flex: 0 1 40%;
+    min-height: 150px;
+    border-top: 1px solid #373a40;
+}
+
+.peers-section h4, .transfer-section h4 {
+    font-size: 12px;
+    color: #868e96;
+    letter-spacing: 0.5px;
+    margin-bottom: 12px;
+}
+
+.peer-list {
+    list-style: none;
+}
+
+.peer-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px;
+    background: #2c2e33;
+    border-radius: 6px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.peer-item:hover, .peer-item.active {
+    background: #373a40;
+}
+
+.peer-info strong {
+    display: block;
+    font-size: 14px;
+}
+
+.peer-endpoint {
+    font-size: 11px;
+    color: #909296;
+}
+
+/* File Transfers */
+.file-card {
+    background: #2c2e33;
+    padding: 10px;
+    border-radius: 6px;
+    margin-bottom: 8px;
+    font-size: 12px;
+}
+
+.progress-bar-bg {
+    background: #1a1b1e;
+    height: 6px;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 6px;
+}
+
+.progress-bar-fill {
+    height: 100%;
+    background: #4dabf7;
+    width: 0%;
+    transition: width 0.3s;
+}
+
+.transfer-card {
+    background: #2c2e33;
+    border-radius: 6px;
+    margin-bottom: 8px;
+    padding: 10px;
+    font-size: 12px;
+}
+
+.transfer-card strong,
+.transfer-status,
+.transfer-progress-label {
+    display: block;
+    overflow-wrap: anywhere;
+}
+
+.transfer-card strong {
+    color: #e1e2e6;
+}
+
+.transfer-status,
+.transfer-progress-label {
+    color: #a5d8ff;
+    font-size: 11px;
+    margin-top: 4px;
+}
+
+.transfer-progress-track {
+    height: 8px;
+    background: #1a1b1e;
+    border-radius: 4px;
+    margin-top: 8px;
+    overflow: hidden;
+}
+
+.transfer-progress-fill {
+    height: 100%;
+    width: 0;
+    background: #4dabf7;
+    transition: width 0.25s ease;
+}
+
+.file-transfer-progress {
+    width: 100%;
+    margin-top: 6px;
+}
+
+.file-progress-label {
+    display: block;
+    margin-top: 4px;
+    color: #a5d8ff;
+    font-size: 11px;
+}
+
+.file-transfer-status {
+    display: block;
+    margin-top: 3px;
+    color: #c1c2c5;
+}
+
+.empty-hint {
+    font-size: 12px;
+    color: #5c5f66;
+    text-align: center;
+    margin-top: 10px;
+}
+
+/* Chat Main Area */
+.chat-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: #1a1b1e;
+}
+
+.chat-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 24px;
+    background: #25262b;
+    border-bottom: 1px solid #2c2e33;
+}
+
+.badge {
+    font-size: 11px;
+    background: #373a40;
+    padding: 3px 8px;
+    border-radius: 12px;
+    color: #a5d8ff;
+}
+
+.stream-tab {
+    background: transparent;
+    border: 1px solid #373a40;
+    color: #c1c2c5;
+    padding: 6px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.stream-tab.active {
+    background: #1971c2;
+    color: #fff;
+    border-color: #1971c2;
+}
+
+.messages-container {
+    flex: 1;
+    padding: 24px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.msg-item {
+    max-width: 65%;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: #25262b;
+    font-size: 14px;
+    line-height: 1.4;
+}
+
+.msg-item.self {
+    align-self: flex-end;
+    background: #1864ab;
+    color: #fff;
+}
+
+.msg-meta {
+    font-size: 11px;
+    color: #adb5bd;
+    margin-bottom: 4px;
+}
+
+.file-message {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.file-message a {
+    color: #a5d8ff;
+}
+
+/* Chat Input Bar */
+.chat-input-bar {
+    padding: 16px 24px;
+    background: #25262b;
+    border-top: 1px solid #2c2e33;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.chat-input-bar input[type="text"] {
+    flex: 1;
+    padding: 12px;
+    background: #1a1b1e;
+    border: 1px solid #373a40;
+    border-radius: 4px;
+    color: #fff;
+    outline: none;
+}
+
+.file-input-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.file-input-wrapper input[type="file"] {
+    flex: 1;
+    min-width: 0;
+    color: #c1c2c5;
+}
+
+.btn {
+    padding: 10px 20px;
+    border-radius: 4px;
+    border: none;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.primary-btn {
+    background: #228be6;
+    color: #fff;
+}
+
+.secondary-btn {
+    background: #495057;
+    color: #fff;
+}
