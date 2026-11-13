@@ -1,11 +1,10 @@
 """Step 2: beginner-friendly TCP client/server handshake checks.
 
 Run this file with:
-    python -m unittest test.test_step2 -v
+    python -m test.test_step2
 
-Expected summary:
-    Ran 10 tests
-    OK
+Example result:
+    Result: 11/11 tests passed
 """
 
 import json
@@ -83,7 +82,6 @@ class TestStep2TCPHandshake(unittest.TestCase):
         self.assertTrue(self._wait_until(
             lambda: self.server.get_dashboard_snapshot()["metrics"]["tcp_connections"] >= 1
         ))
-        print("PASS: TCP client connected to the server.")
 
     def test_02_client_receives_successful_login_acknowledgment(self) -> None:
         """A valid login receives success=True and a server-issued session ID."""
@@ -102,7 +100,6 @@ class TestStep2TCPHandshake(unittest.TestCase):
         self.assertEqual(state.username, "Alice")
         self.assertEqual(state.session_id, session_id)
         self.assertEqual(state.status, "CONNECTED")
-        print(f"PASS: Server acknowledged Alice (session {session_id}).")
 
     def test_03_server_records_username_ip_and_udp_port(self) -> None:
         """The server's online list shows the logged-in user and endpoint."""
@@ -115,7 +112,6 @@ class TestStep2TCPHandshake(unittest.TestCase):
         self.assertEqual(user["ip"], "127.0.0.1")
         self.assertEqual(user["udp_port"], 25002)
         self.assertGreater(user["tcp_port"], 0)
-        print("PASS: Server listed Bob, his IP address, and UDP port.")
 
     def test_04_server_rejects_an_empty_username(self) -> None:
         """A login without a username receives a clear rejection acknowledgment."""
@@ -123,7 +119,6 @@ class TestStep2TCPHandshake(unittest.TestCase):
 
         self.assertFalse(response["success"])
         self.assertIn("Username", response["error"])
-        print("PASS: Empty username was rejected with an explanation.")
 
     def test_05_server_rejects_an_invalid_udp_port(self) -> None:
         """A port outside the valid 1-65535 range cannot be registered."""
@@ -131,7 +126,6 @@ class TestStep2TCPHandshake(unittest.TestCase):
 
         self.assertFalse(response["success"])
         self.assertIn("UDP port", response["error"])
-        print("PASS: Invalid UDP port was rejected.")
 
     def test_06_server_rejects_duplicate_online_usernames(self) -> None:
         """A second login using the same name, ignoring letter case, is rejected."""
@@ -141,7 +135,6 @@ class TestStep2TCPHandshake(unittest.TestCase):
         self.assertTrue(first_response["success"])
         self.assertFalse(second_response["success"])
         self.assertIn("already online", second_response["error"])
-        print("PASS: Duplicate online username was rejected.")
 
     def test_07_new_client_receives_roster_of_online_users(self) -> None:
         """The login acknowledgment tells a new client who is already online."""
@@ -153,7 +146,6 @@ class TestStep2TCPHandshake(unittest.TestCase):
             [peer["username"] for peer in second_response["peers"]],
             ["Alice"],
         )
-        print("PASS: Bob's acknowledgment included online user Alice.")
 
     def test_08_closing_tcp_connection_removes_user_from_online_list(self) -> None:
         """Closing the persistent TCP connection marks the user offline."""
@@ -164,7 +156,6 @@ class TestStep2TCPHandshake(unittest.TestCase):
         connection.close()
 
         self.assertTrue(self._wait_until(lambda: self.server.get_users() == []))
-        print("PASS: Disconnected client was removed from the online list.")
 
     def test_09_server_handles_several_clients_connecting_together(self) -> None:
         """Ten clients can complete the TCP login handshake concurrently."""
@@ -179,7 +170,6 @@ class TestStep2TCPHandshake(unittest.TestCase):
         self.assertTrue(all(response["success"] for response in responses))
         self.assertTrue(self._wait_until(lambda: len(self.server.get_users()) == 10))
         self.assertEqual(len({response["session_id"] for response in responses}), 10)
-        print("PASS: All 10 clients received unique successful acknowledgments.")
 
     def test_10_malformed_login_request_is_closed_without_success(self) -> None:
         """Invalid JSON cannot be mistaken for a successful login."""
@@ -193,7 +183,6 @@ class TestStep2TCPHandshake(unittest.TestCase):
 
         self.assertEqual(connection.recv(1), b"")
         self.assertEqual(self.server.get_users(), [])
-        print("PASS: Malformed request was closed and no user was logged in.")
 
     def test_11_silent_client_is_removed_after_timeout(self) -> None:
         """A client that logs in then stays silent is dropped after the timeout."""
@@ -207,7 +196,8 @@ class TestStep2TCPHandshake(unittest.TestCase):
     
         self.assertTrue(response["success"])
         self.assertTrue(self._wait_until(lambda: self.server.get_users() == [], timeout=4))
-        print("PASS: Silent client was removed after the timeout.")
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    from test.test_report import run_step_tests
+
+    run_step_tests(__name__)

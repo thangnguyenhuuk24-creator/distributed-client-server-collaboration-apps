@@ -164,12 +164,23 @@ Giả sử máy chủ trung tâm có địa chỉ IP LAN là `192.168.1.15`:
 
 Từ thư mục gốc dự án:
 ```bash
-# Chạy toàn bộ test (37 test case)
-python -m unittest discover -s test -t . -v
+# Chạy toàn bộ 100 test, có dòng PASS/FAIL cho từng test và tổng kết
+python -m test.run_tests
 
-# Chạy riêng từng file
-python -m unittest test.test_retransmission -v
-python -m unittest test.test_e2e_network -v
+# Chạy riêng các yêu cầu step
+python -m test.test_step2
+python -m test.test_step3
+python -m test.test_step4
+python -m test.test_step5
+python -m test.test_step6
+python -m test.test_step7
+python -m test.test_step8
+
+# Chạy test các chức năng chuyên sâu
+python -m test.test_central_dashboard
+python -m test.test_retransmission
+python -m test.test_e2e_network
+python -m test.test_thread_safety
 
 # Load test: 20 client đồng thời + file 1 MB
 python tools/load_test.py --clients 20 --file-mb 1
@@ -205,8 +216,16 @@ network_app/
 │   ├── net_helpers.py            # Tiện ích mô phỏng mạng (mất gói) cho test
 │   ├── test_e2e_network.py       # Test đầu-cuối: file 1MB, mất gói 10%, chat không bị HoL
 │   ├── test_retransmission.py    # Test cửa sổ trượt, CUBIC, SACK, giới hạn retry
-│   ├── test_step2.py             # Test bắt tay TCP, login, roster, timeout client
-│   └── test_step8.py             # Test mã hóa AES
+│   ├── run_tests.py              # Chạy toàn bộ test và in tổng pass/tổng test
+│   ├── test_report.py            # Định dạng dòng PASS/FAIL và tổng kết theo step
+│   ├── test_step2.py             # Test bắt tay TCP và đăng nhập
+│   ├── test_step3.py             # Test xác thực và trạng thái người dùng
+│   ├── test_step4.py             # Test kết nối/ngắt kết nối đồng thời
+│   ├── test_step5.py             # Test định tuyến và broadcast tin nhắn
+│   ├── test_step6.py             # Test truyền, chia chunk và ghép file UDP
+│   ├── test_step7.py             # Test timeout, lỗi mạng và shutdown an toàn
+│   ├── test_step8.py             # Test mã hóa AES
+│   └── test_thread_safety.py     # Test tranh chấp tài nguyên trong ClientState
 ├── tools/
 │   ├── load_test.py              # Load test nhiều client đồng thời
 │   └── TCPCUBIC.cpp              # Tham khảo thuật toán CUBIC (không dùng khi chạy)

@@ -7,7 +7,7 @@ These fill the gaps left by the unit tests (steps 5, 6, 7, 10):
   * chat is not blocked while a big, lossy file transfer is running (no HoL)
   * a sender gives up instead of hanging when the receiver disappears
 
-Run:  python -m unittest test.test_e2e_network -v      (takes about 1 minute)
+Run:  python -m test.test_e2e_network      (takes about 1 minute)
 """
 
 import os
@@ -60,7 +60,7 @@ class EndToEndTest(unittest.TestCase):
                  if n.startswith(os.path.splitext(filename)[0])]
         return os.path.join(client.download_dir, found[0]) if found else None
 
-    def test_file_1mb_no_loss(self):
+    def test_01_file_1mb_no_loss(self):
         alice, bob = self.make_pair()
         src = self.make_file(1_000_000)
         self.send_file(alice, "bob", src, "t1")
@@ -68,7 +68,7 @@ class EndToEndTest(unittest.TestCase):
             lambda: bob.state.file_transfers.get("t1", {}).get("status") == "COMPLETED", 15))
         self.assertEqual(sha256_of(src), sha256_of(self.received_path(bob, "src_1000000.bin")))
 
-    def test_file_is_relayed_through_central_server(self):
+    def test_02_file_is_relayed_through_central_server(self):
         alice, bob = self.make_pair(loss=0.10)
         src = self.make_file(16_000)
         bob_peer = alice.peer("bob")
@@ -106,7 +106,7 @@ class EndToEndTest(unittest.TestCase):
         self.assertGreater(snapshot["throughput"]["file_packets_per_second"], 0)
         self.assertGreater(alice.dropped + bob.dropped, 0)
 
-    def test_file_survives_10_percent_packet_loss(self):
+    def test_03_file_survives_10_percent_packet_loss(self):
         alice, bob = self.make_pair(loss=0.10)
         src = self.make_file(150_000)
         self.send_file(alice, "bob", src, "t2")
@@ -115,7 +115,7 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(sha256_of(src), sha256_of(self.received_path(bob, "src_150000.bin")))
         self.assertGreater(alice.dropped + bob.dropped, 0, "no packet was actually dropped")
 
-    def test_private_chat_in_order_exactly_once_with_loss(self):
+    def test_04_private_chat_in_order_exactly_once_with_loss(self):
         alice, bob = self.make_pair(loss=0.15)
         stream = private_stream_id(alice.session_id, bob.session_id)
         bp = alice.peer("bob")
@@ -135,7 +135,7 @@ class EndToEndTest(unittest.TestCase):
             0,
         )
 
-    def test_chat_is_not_blocked_by_a_lossy_file_transfer(self):
+    def test_05_chat_is_not_blocked_by_a_lossy_file_transfer(self):
         alice, bob = self.make_pair(loss=0.15)
         src = self.make_file(400_000)
         def background_upload():
@@ -148,19 +148,16 @@ class EndToEndTest(unittest.TestCase):
         sender.start()
         self.assertTrue(wait_until(lambda: "big" in alice.state.file_transfers, 5))
 
-        start = time.monotonic()
         for i in range(5):
             alice.engine.send_message("", 0, 0, f"hello-{i}")
         got = lambda: sum(1 for m in bob.state.streams.get(0, [])
                           if m["text"].startswith("hello-"))
         self.assertTrue(wait_until(lambda: got() == 5, 10), "chat was blocked")
-        elapsed = time.monotonic() - start
         status = bob.state.file_transfers.get("big", {}).get("status")
         self.assertNotEqual(status, "COMPLETED",
                             "file finished too fast to prove chat ran in parallel")
-        print(f"\n    5 chat messages arrived in {elapsed:.1f}s while the file was still {status}")
 
-    def test_sender_gives_up_when_receiver_disappears(self):
+    def test_06_sender_gives_up_when_receiver_disappears(self):
         alice, bob = self.make_pair()
         src = self.make_file(2_000_000)
         outcome = {}
@@ -182,4 +179,6 @@ class EndToEndTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    from test.test_report import run_test_module
+
+    run_test_module(__name__)

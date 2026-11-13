@@ -38,7 +38,7 @@ class CentralDashboardTest(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=3) as response:
             return response.status, response.read()
 
-    def test_dashboard_reports_status_and_exports_and_clears_logs(self):
+    def test_01_dashboard_reports_status_and_exports_and_clears_logs(self):
         unknown_datagram = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         unknown_datagram.sendto(
             b"not-a-relay-packet",
@@ -70,7 +70,7 @@ class CentralDashboardTest(unittest.TestCase):
         _, body = self.request("/api/dashboard")
         self.assertEqual(json.loads(body)["events"], [])
 
-    def test_dashboard_can_stop_and_restart_server(self):
+    def test_02_dashboard_can_stop_and_restart_server(self):
         self.request("/api/server/stop", method="POST", body={})
         _, body = self.request("/api/dashboard")
         self.assertEqual(json.loads(body)["status"], "offline")
@@ -79,7 +79,7 @@ class CentralDashboardTest(unittest.TestCase):
         _, body = self.request("/api/dashboard")
         self.assertEqual(json.loads(body)["status"], "online")
 
-    def test_dashboard_can_kick_a_client(self):
+    def test_03_dashboard_can_kick_a_client(self):
         udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         udp_socket.bind(("127.0.0.1", 0))
         connection = socket.create_connection(
@@ -108,4 +108,6 @@ class CentralDashboardTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    from test.test_report import run_test_module
+
+    run_test_module(__name__)

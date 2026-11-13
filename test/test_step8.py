@@ -1,11 +1,10 @@
 """Step 8: beginner-friendly checks for payload encryption.
 
 Run this file with:
-    python -m unittest test.test_step8 -v
+    python -m test.test_step8
 
-Expected summary:
-    Ran 10 tests
-    OK
+Example result:
+    Result: 10/10 tests passed
 
 When the ``cryptography`` package is installed, the app uses AES-CBC.
 Otherwise these checks exercise the app's documented XOR fallback.
@@ -26,7 +25,6 @@ class TestStep8Encryption(unittest.TestCase):
         """Encrypting an empty message returns an empty result."""
         self.assertEqual(self.crypto.encrypt(b""), b"")
         self.assertEqual(self.crypto.decrypt(b""), b"")
-        print("PASS: Empty data stays empty.")
 
     def test_02_encrypting_text_does_not_expose_the_original_text(self) -> None:
         """The bytes sent over the network differ from the original message."""
@@ -36,7 +34,6 @@ class TestStep8Encryption(unittest.TestCase):
 
         self.assertNotEqual(encrypted, message)
         self.assertNotIn(message, encrypted)
-        print("PASS: Encrypted payload does not contain the original message.")
 
     def test_03_encrypted_text_can_be_read_again(self) -> None:
         """A recipient with the same key can recover the original text."""
@@ -45,7 +42,6 @@ class TestStep8Encryption(unittest.TestCase):
         recovered = self.crypto.decrypt(self.crypto.encrypt(message))
 
         self.assertEqual(recovered, message)
-        print("PASS: Vietnamese text was recovered exactly.")
 
     def test_04_binary_file_bytes_survive_encryption(self) -> None:
         """Encryption also preserves bytes that are not readable text."""
@@ -54,7 +50,6 @@ class TestStep8Encryption(unittest.TestCase):
         recovered = self.crypto.decrypt(self.crypto.encrypt(file_chunk))
 
         self.assertEqual(recovered, file_chunk)
-        print("PASS: Binary file data was recovered without changes.")
 
     def test_05_large_payload_can_be_encrypted_and_recovered(self) -> None:
         """A larger payload is not limited to one cipher block."""
@@ -63,7 +58,6 @@ class TestStep8Encryption(unittest.TestCase):
         recovered = self.crypto.decrypt(self.crypto.encrypt(large_payload))
 
         self.assertEqual(recovered, large_payload)
-        print(f"PASS: A {len(large_payload)}-byte payload was recovered.")
 
     def test_06_encrypting_the_same_data_twice_uses_random_bytes(self) -> None:
         """A random IV or salt makes repeated ciphertexts different."""
@@ -75,7 +69,6 @@ class TestStep8Encryption(unittest.TestCase):
         self.assertNotEqual(first_encryption, second_encryption)
         self.assertEqual(self.crypto.decrypt(first_encryption), message)
         self.assertEqual(self.crypto.decrypt(second_encryption), message)
-        print("PASS: Repeated encryption produced different ciphertexts.")
 
     def test_07_another_engine_with_the_same_key_can_decrypt(self) -> None:
         """Two clients configured with the same key can exchange encrypted data."""
@@ -86,7 +79,6 @@ class TestStep8Encryption(unittest.TestCase):
         recovered = receiver.decrypt(sender.encrypt(message))
 
         self.assertEqual(recovered, message)
-        print("PASS: A second client using the same key decrypted the payload.")
 
     def test_08_short_keys_are_padded_to_aes_key_length(self) -> None:
         """The app converts short configured keys into a 16-byte key."""
@@ -94,7 +86,6 @@ class TestStep8Encryption(unittest.TestCase):
 
         self.assertEqual(len(crypto.key), 16)
         self.assertEqual(crypto.key, b"short###########")
-        print("PASS: Short key was padded to 16 bytes.")
 
     def test_09_long_keys_are_trimmed_to_aes_key_length(self) -> None:
         """The app uses the first 16 bytes of a longer configured key."""
@@ -102,7 +93,6 @@ class TestStep8Encryption(unittest.TestCase):
 
         self.assertEqual(len(crypto.key), 16)
         self.assertEqual(crypto.key, b"0123456789abcdef")
-        print("PASS: Long key was trimmed to 16 bytes.")
 
     def test_10_ciphertext_matches_the_active_crypto_mode(self) -> None:
         """AES output has a random IV and blocks; fallback output has its marker."""
@@ -112,12 +102,12 @@ class TestStep8Encryption(unittest.TestCase):
             ciphertext = encrypted[16:]
             self.assertGreaterEqual(len(encrypted), 32)
             self.assertEqual(len(ciphertext) % 16, 0)
-            print("PASS: AES-CBC output contains an IV and complete cipher blocks.")
         else:
             self.assertTrue(encrypted.startswith(b"XOR:"))
             self.assertEqual(self.crypto.decrypt(encrypted), b"check the encryption mode")
-            print("PASS: XOR fallback format is active and round-trips correctly.")
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    from test.test_report import run_step_tests
+
+    run_step_tests(__name__)
