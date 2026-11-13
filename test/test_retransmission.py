@@ -180,6 +180,40 @@ class TestRetransmissionAndCongestionControl(unittest.TestCase):
  
         self.assertTrue(sender.failed)
 
+    def test_12_sequence_diagram_packet_loss_and_sack(self) -> None:
+        sender = SlidingWindowSender(stream_id=1, window_size=8, rto_seconds=5)
+        sender.cwnd = 8
+        for seq in range(1, 7):
+            sender.register_packet(
+                FLAG_MSG, session_id=1, payload=f"data-{seq}".encode()
+            )
+
+        receiver = StreamReceiver(stream_id=1)
+        receiver.process_incoming_packet(1, b"data-1")
+        receiver.process_incoming_packet(3, b"data-3")
+        _, ack_5, sack_5 = receiver.process_incoming_packet(5, b"data-5")
+
+        self.assertEqual((ack_5, sack_5), (2, ((3, 4), (5, 6))))
+        sender.on_ack_received(ack_num=ack_5, sack_blocks=sack_5)
+
+        resent_1 = sender.get_packets_for_retransmission()
+        self.assertEqual([packet.seq_num for packet in resent_1], [2])
+
+        # Nhận lại gói 2: ACK tiến tới 4, nhưng gói 4 mới chỉ có gói 5 phía sau.
+        _, ack_2, sack_2 = receiver.process_incoming_packet(2, b"data-2")
+        self.assertEqual((ack_2, sack_2), (4, ((5, 6),)))
+        sender.on_ack_received(ack_num=ack_2, sack_blocks=sack_2)
+        self.assertEqual(sender.get_packets_for_retransmission(), [])
+
+        # Gói 6 tạo đủ hai SACK phía sau gói 4: gói 5 và 6.
+        _, ack_6, sack_6 = receiver.process_incoming_packet(6, b"data-6")
+        self.assertEqual((ack_6, sack_6), (4, ((5, 7),)))
+        sender.on_ack_received(ack_num=ack_6, sack_blocks=sack_6)
+
+        resent_2 = sender.get_packets_for_retransmission()
+        self.assertEqual([packet.seq_num for packet in resent_2], [4])
+
+        
 if __name__ == "__main__":
     from test.test_report import run_test_module
 
