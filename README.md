@@ -156,7 +156,7 @@ Giả sử máy chủ trung tâm có địa chỉ IP LAN là `192.168.1.15`:
 
 Từ thư mục gốc dự án:
 ```bash
-# Chạy toàn bộ 100 test, có dòng PASS/FAIL cho từng test và tổng kết
+# Chạy toàn bộ 101 test, có dòng PASS/FAIL cho từng test và tổng kết
 python -m test.run_tests
 
 # Chạy riêng các yêu cầu step
