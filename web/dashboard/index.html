@@ -31,7 +31,7 @@
             <section class="intro">
                 <div>
                     <p class="eyebrow">OPERATIONS OVERVIEW</p>
-                    <h2>Your LAN collaboration server, at a glance.</h2>
+                    <h2>Your Server.</h2>
                     <p class="muted">Presence and relay telemetry only. Message contents are never recorded here.</p>
                 </div>
                 <div class="uptime-panel">
@@ -52,24 +52,24 @@
                     <small>Since server start</small>
                 </article>
                 <article class="metric-card">
-                    <span>CHAT / FILE RELAYS</span>
-                    <strong id="data-relays">0 / 0</strong>
-                    <small>Chat · file datagrams delivered</small>
+                    <span>CHAT DATAGRAMS FORWARDED</span>
+                    <strong id="chat-relays">0</strong>
+                    <small>Since server start · counted per recipient</small>
                 </article>
                 <article class="metric-card">
-                    <span>GLOBAL / PRIVATE CHAT</span>
+                    <span>FILE DATAGRAMS FORWARDED</span>
+                    <strong id="file-relays">0</strong>
+                    <small>Since server start · includes chunks and retries</small>
+                </article>
+                <article class="metric-card">
+                    <span>GLOBAL / PRIVATE RELAYS</span>
                     <strong id="chat-types">0 / 0</strong>
-                    <small>Successfully forwarded</small>
+                    <small>Per-recipient · latest 100 events</small>
                 </article>
                 <article class="metric-card">
-                    <span>UDP THROUGHPUT</span>
+                    <span>THROUGHPUT</span>
                     <strong id="throughput">0 B/s</strong>
-                    <small id="packet-throughput">0 packets/s · 0 file packets/s</small>
-                </article>
-                <article class="metric-card">
-                    <span>RELAY TRAFFIC</span>
-                    <strong id="relay-bytes">0 B</strong>
-                    <small id="relay-drops">0 dropped</small>
+                    <small id="packet-throughput">0 packets/s · 0 file packets/s · 5s avg</small>
                 </article>
             </section>
 
@@ -98,51 +98,60 @@
                 </article>
             </section>
 
-            <section class="content-grid">
-                <article class="panel users-panel">
-                    <div class="panel-heading">
-                        <div>
-                            <p class="eyebrow">LIVE PRESENCE</p>
-                            <h3>Connected users <span class="count-pill" id="users-label">0</span></h3>
-                        </div>
-                        <span class="muted small">TCP session + UDP endpoint</span>
+            <section class="panel users-panel">
+                <div class="panel-heading">
+                    <div>
+                        <p class="eyebrow">LIVE PRESENCE</p>
+                        <h3>Connected users <span class="count-pill" id="users-label">0</span></h3>
                     </div>
-                    <div class="table-wrap">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>USER</th>
-                                    <th>SESSION</th>
-                                    <th>IP ADDRESS</th>
-                                    <th>TCP PEER PORT</th>
-                                    <th>ACTIVE UDP PORT</th>
-                                    <th>STATUS</th>
-                                    <th>CONNECTED</th>
-                                    <th>ACTION</th>
-                                </tr>
-                            </thead>
-                            <tbody id="users-body">
-                                <tr><td colspan="8" class="empty-state">Waiting for clients...</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </article>
+                    <span class="muted small">TCP session + UDP endpoint</span>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>USER</th>
+                                <th>SESSION</th>
+                                <th>IP ADDRESS</th>
+                                <th>TCP PEER PORT</th>
+                                <th>ACTIVE UDP PORT</th>
+                                <th>STATUS</th>
+                                <th>CONNECTED</th>
+                                <th>ACTION</th>
+                            </tr>
+                        </thead>
+                        <tbody id="users-body">
+                            <tr><td colspan="8" class="empty-state">Waiting for clients...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
 
-                <article class="panel activity-panel">
-                    <div class="panel-heading">
-                        <div>
-                            <p class="eyebrow">AUDIT TRAIL</p>
-                            <h3>Recent activity</h3>
-                        </div>
-                        <div class="button-row">
-                            <a class="button" href="/api/logs/export">Export</a>
-                            <button id="clear-logs" class="button" type="button">Clear</button>
-                        </div>
+            <section class="panel messages-panel">
+                <div class="panel-heading">
+                    <div>
+                        <p class="eyebrow">MESSAGE MANAGER</p>
+                        <h3>Recent chat relays <span class="count-pill" id="chat-relay-count">0</span></h3>
                     </div>
-                    <div id="events-list" class="events-list">
-                        <p class="empty-state">No activity yet.</p>
-                    </div>
-                </article>
+                    <span class="muted small">Latest 100 server events · one row per recipient</span>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>TIME</th>
+                                <th>TYPE</th>
+                                <th>SENDER</th>
+                                <th>RECIPIENT</th>
+                                <th>STREAM</th>
+                                <th>PACKET SIZE</th>
+                            </tr>
+                        </thead>
+                        <tbody id="chat-relays-body">
+                            <tr><td colspan="6" class="empty-state">No recent chat deliveries.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
             </section>
 
             <section class="panel transfers-panel">
@@ -173,7 +182,7 @@
                 </div>
             </section>
 
-            <footer>Local-only control panel · Refreshes every 2 seconds · File names and transfer metadata only; payloads are not stored</footer>
+            <footer>Local-only control panel · Refreshes every 2 seconds · Chat and file payloads are not stored; only relay metadata is shown</footer>
         </main>
     </div>
 </body>

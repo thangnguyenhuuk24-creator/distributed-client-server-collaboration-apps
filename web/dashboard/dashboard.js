@@ -98,69 +98,38 @@ function renderTransfers(transfers) {
     });
 }
 
-function describeEvent(event) {
-    switch (event.type) {
-        case "tcp_connected":
-            return ["Handshake started", `${event.ip}:${event.tcp_port}`];
-        case "login_accepted":
-            return ["Authentication succeeded", `${event.username} · ${event.ip} · UDP ${event.udp_port}`];
-        case "login_rejected":
-            return ["Authentication failed", `${event.username || event.ip} · ${event.reason}`];
-        case "client_disconnected":
-            return ["Client disconnected", `${event.username} · ${event.ip}`];
-        case "client_timeout":
-            return ["Client timed out", `${event.username} · ${event.ip}`];
-        case "client_kicked":
-            return ["Client kicked", `${event.username} · ${event.ip}`];
-        case "network_warning":
-            return ["Network / security warning", `${event.ip}:${event.port} · ${event.reason}`];
-        case "client_warning":
-            return ["Client reported a security warning", `${event.username} · ${event.category}`];
-        case "login_timeout":
-            return ["Handshake timed out", event.ip];
-        case "server_started":
-            return ["Server started", `TCP ${event.tcp_port} · UDP ${event.relay_port}`];
-        case "server_stopped":
-            return ["Server stopped", "Listeners closed"];
-        case "chat_relayed":
-            return ["Chat relayed", `${event.sender} → ${event.recipient} · stream ${event.stream_id} · ${event.bytes} B`];
-        case "file_relayed":
-            return ["File packet relayed", `${event.sender} → ${event.recipient} · stream ${event.stream_id} · ${event.bytes} B`];
-        case "ack_relayed":
-            return ["ACK relayed", `${event.sender} → ${event.recipient} · stream ${event.stream_id}`];
-        case "relay_dropped":
-            return ["Relay delivery failed", `session ${event.sender_session_id} → ${event.target_session_id}`];
-        default:
-            return [event.type, ""];
-    }
-}
-
-function renderEvents(events) {
-    const container = $("events-list");
-    container.replaceChildren();
-    if (!events.length) {
-        const empty = document.createElement("p");
-        empty.className = "empty-state";
-        empty.textContent = "No activity yet.";
-        container.appendChild(empty);
+function renderChatRelays(relays) {
+    const tbody = $("chat-relays-body");
+    tbody.replaceChildren();
+    $("chat-relay-count").textContent = relays.length.toLocaleString();
+    if (!relays.length) {
+        const row = document.createElement("tr");
+        const cell = makeCell("No recent chat deliveries.");
+        cell.colSpan = 6;
+        cell.className = "empty-state";
+        row.appendChild(cell);
+        tbody.appendChild(row);
         return;
     }
-    events.forEach((event) => {
-        const row = document.createElement("div");
-        row.className = "event-row";
-        const time = document.createElement("time");
-        time.className = "event-time";
-        time.textContent = new Date(event.timestamp * 1000).toLocaleTimeString();
-        const content = document.createElement("div");
-        const title = document.createElement("p");
-        title.className = "event-title";
-        const detail = document.createElement("p");
-        detail.className = "event-detail";
-        [title.textContent, detail.textContent] = describeEvent(event);
-        content.append(title, detail);
-        row.append(time, content);
-        container.appendChild(row);
+
+    relays.forEach((event) => {
+        const row = document.createElement("tr");
+        row.append(
+            makeCell(new Date(event.timestamp * 1000).toLocaleTimeString()),
+            makeCell(event.stream_id === 0 ? "Global" : "Private"),
+            makeCell(event.sender),
+            makeCell(event.recipient),
+            makeCell(String(event.stream_id), true),
+            makeCell(formatBytes(event.bytes)),
+        );
+        tbody.appendChild(row);
     });
+}
+
+function getRecentChatRelays(events) {
+    return events.filter(
+        (event) => event.type === "chat_relayed" && Number.isInteger(event.stream_id),
+    );
 }
 
 async function refreshDashboard() {
@@ -176,22 +145,26 @@ async function refreshDashboard() {
         $("last-updated").textContent = new Date(data.updated_at * 1000).toLocaleTimeString();
         $("uptime").textContent = formatDuration(data.uptime_seconds);
         $("online-count").textContent = data.online_count;
-        $("successful-logins").textContent = metrics.successful_logins;
-        $("data-relays").textContent = `${metrics.chat_relays} / ${metrics.file_relays}`;
-        $("chat-types").textContent = `${metrics.global_chat_relays} / ${metrics.private_chat_relays}`;
+        $("successful-logins").textContent = metrics.successful_logins.toLocaleString();
+        $("chat-relays").textContent = metrics.chat_relays.toLocaleString();
+        $("file-relays").textContent = metrics.file_relays.toLocaleString();
+        const recentChatRelays = getRecentChatRelays(data.events);
+        const recentGlobalRelays = recentChatRelays.filter((event) => event.stream_id === 0).length;
+        const recentPrivateRelays = recentChatRelays.length - recentGlobalRelays;
+        $("chat-types").textContent =
+            `${recentGlobalRelays.toLocaleString()} / ${recentPrivateRelays.toLocaleString()}`;
         $("throughput").textContent = `${formatBytes(data.throughput.bytes_per_second)}/s`;
         $("packet-throughput").textContent =
             `${data.throughput.packets_per_second} packets/s · ` +
-            `${data.throughput.file_packets_per_second} file packets/s`;
-        $("relay-bytes").textContent = formatBytes(metrics.relay_bytes);
-        $("relay-drops").textContent = `${metrics.relay_drops} dropped · ${metrics.ack_relays} ACK relays`;
+            `${data.throughput.file_packets_per_second} file packets/s · ` +
+            `${data.throughput.window_seconds}s avg`;
         $("tcp-endpoint").textContent = `${data.listeners.tcp.address}:${data.listeners.tcp.port}`;
         $("udp-endpoint").textContent = `${data.listeners.udp_relay.address}:${data.listeners.udp_relay.port}`;
         $("tcp-address").textContent = `${data.listeners.tcp.address}:${data.listeners.tcp.port}`;
         $("udp-address").textContent = `${data.listeners.udp_relay.address}:${data.listeners.udp_relay.port}`;
         renderUsers(data.users);
+        renderChatRelays(recentChatRelays);
         renderTransfers(data.file_transfers);
-        renderEvents(data.events);
     } catch (error) {
         $("server-status").textContent = "CONNECTION ERROR";
         $("server-status").previousElementSibling.classList.add("offline");
@@ -220,10 +193,6 @@ $("server-toggle").addEventListener("click", async () => {
     if (online && !window.confirm("Stop the server and disconnect all clients?")) return;
     $("server-toggle").disabled = true;
     await runAction(online ? "/api/server/stop" : "/api/server/start");
-});
-
-$("clear-logs").addEventListener("click", async () => {
-    await runAction("/api/logs/clear");
 });
 
 refreshDashboard();
