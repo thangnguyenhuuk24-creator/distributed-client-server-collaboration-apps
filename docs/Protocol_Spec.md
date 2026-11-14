@@ -255,7 +255,7 @@ Mỗi `SlidingWindowSender` duy trì một cửa sổ tắc nghẽn động (`cw
 Quá trình truyền tập tin kích thước lớn qua UDP tuân thủ quy trình 3 bước khép kín để chống phân mảnh IP (IP Fragmentation) và đảm bảo toàn vẹn dữ liệu:
 
 1. **Chunking & Integrity Hashing (`FileTransferManager`):**
-   * Tập tin gốc được đọc tuần tự và cắt thành các mảnh kích thước tối đa **`1350 bytes`** (đảm bảo tổng kích thước gói tin sau khi cộng Header 22 bytes, AES IV/Padding 32 bytes và Relay JSON luôn nằm gọn dưới ngưỡng `MTU = 1500 bytes`).
+   * Tập tin gốc được đọc tuần tự và cắt thành các mảnh kích thước tối đa **`1350 bytes`** (đảm bảo tổng kích thước gói tin sau khi cộng Header 24 bytes, AES IV/Padding 32 bytes và Relay JSON luôn nằm gọn dưới ngưỡng `MTU = 1500 bytes`).
    * Toàn bộ nội dung tệp được băm bằng thuật toán **SHA-256**.
 2. **Metadata Initialization (`seq_num = 1`):**
    * Gói tin đầu tiên trên luồng truyền file mang cờ `FLAG_FILE` chứa chuỗi JSON metadata được mã hóa AES:
