@@ -1,12 +1,12 @@
 # PROTOCOL SPECIFICATION & SYSTEM ARCHITECTURE
 **Project:** Distributed and Streaming-based Client-Server Collaboration Application  
-**Document Status:** Production Specification  
+**Document Status:** Bản đặc tả giao thức của dự án  
 
 ---
 
 ## 1. SYSTEM ARCHITECTURE OVERVIEW
 
-Hệ thống áp dụng kiến trúc lai (**Hybrid Client-Server / Peer-to-Peer**) phân tách rõ ràng giữa mặt phẳng điều khiển (**Control Plane**) và mặt phẳng dữ liệu (**Data Plane**), kết hợp giao diện quản trị cục bộ tách biệt hoàn toàn với lõi xử lý mạng.
+Hệ thống áp dụng kiến trúc lai (**Hybrid**) phân tách rõ ràng giữa mặt phẳng điều khiển (**Control Plane**, TCP) và mặt phẳng dữ liệu (**Data Plane**, UDP). Ở chế độ có Central Server, mọi dữ liệu chat, file và ACK đều đi qua UDP Relay của server. Chế độ P2P thuần (không đặt `--server-host`) chỉ là chế độ dự phòng, dùng UDP broadcast discovery và truyền trực tiếp giữa các peer. Giao diện người dùng và dashboard quản trị được tách khỏi lõi xử lý mạng.
 
 ```
 +-----------------------------------------------------------------------------------+
@@ -37,7 +37,7 @@ Hệ thống áp dụng kiến trúc lai (**Hybrid Client-Server / Peer-to-Peer*
 |  +-----------------------+      Shared State         +-------------------------+  |
 |  | TCP Presence & Auth   | <-----------------------> |  UDP Datagram Relay     |  |
 |  | - Session Allocation  |                           |  - Unicast/Broadcast    |  |
-|  | - Roster Broadcast    |                           |  - File/ACK Forwarding  |  |
+|  | - Roster Broadcast    |                           |  - Chat/File/ACK Relay  |  |
 |  | - Ping / Timeout      |                           |  - Metrics & Telemetry  |  |
 |  +-----------------------+                           +-------------------------+  |
 |                                     ^                                             |
@@ -48,29 +48,31 @@ Hệ thống áp dụng kiến trúc lai (**Hybrid Client-Server / Peer-to-Peer*
 |                        +-------------------------+                                |
 +-----------------------------------------------------------------------------------+
 ```
+
 ### 1.1 State Diagram
+
 ```mermaid
 stateDiagram-v2
     [*] --> Tat_May: Khởi động ứng dụng Client
-    
+
     Tat_May --> Tu_Kiem_Tra: Bật tiến trình / Khởi tạo Local Server (ThreadingHTTPServer)
     Tu_Kiem_Tra --> Cho_Ranh_Roi: Tải thành công ClientState (In-memory Thread-safe)
     Tu_Kiem_Tra --> Su_Co: Lỗi cấu hình / Thiếu thư viện cryptography
-    
+
     Cho_Ranh_Roi --> Tat_May: Đóng cửa sổ trình duyệt / Tắt ứng dụng
     Cho_Ranh_Roi --> Bao_Tri: Kiểm tra trạng thái / Đồng bộ thủ công
-    
+
     Bao_Tri --> Cho_Ranh_Roi: Hoàn tất kiểm tra
     Bao_Tri --> Su_Co: Lỗi ngoại lệ hệ thống
     Su_Co --> Bao_Tri: Khởi động lại luồng
     Su_Co --> Tat_May: Buộc dừng ứng dụng
 
-    Cho_Ranh_Roi --> Dang_Ket_Noi: POST /api/login (Gửi username & udp_port qua TCP tới Central Server)
-    
+    Cho_Ranh_Roi --> Dang_Ket_Noi: POST /api/login (Gửi username và udp_port qua TCP tới Central Server)
+
     state Dang_Ket_Noi {
         [*] --> Gui_Thong_Tin
         Gui_Thong_Tin --> Doi_Phan_Hoi: Kết nối TCP bền vững (Persistent Socket)
-        Doi_Phan_Hoi --> [*]: Nhận về session_id (uint32) & Roster trực tuyến
+        Doi_Phan_Hoi --> [*]: Nhận về session_id (uint32) và Roster trực tuyến
     }
 
     Dang_Ket_Noi --> Trang_Thai_Loi: Sai định dạng / Từ chối / Hết thời gian chờ TCP
@@ -80,32 +82,37 @@ stateDiagram-v2
 
     state Phien_Da_Ket_Noi {
         [*] --> Trang_Thai_Hoat_Dong
-        
+
         state Trang_Thai_Hoat_Dong {
             [*] --> San_Sang
-            San_Sang --> Dang_Gui_Tin_Nhan: Gửi/Nhận Chat (Luồng 0 hoặc Luồng riêng 1+)
-            Dang_Gui_Tin_Nhan --> San_Sang: Nhận gói tin ACK tích lũy / Payload AES-128-CBC
-            
-            San_Sang --> Dang_Truyen_File: Bắt đầu truyền file (RUDP + CUBIC + SACK)
-            
+            San_Sang --> Dang_Gui_Tin_Nhan: Gửi/Nhận Chat (Luồng 0 hoặc luồng riêng từ 2 trở lên)
+            Dang_Gui_Tin_Nhan --> San_Sang: Nhận ACK tích lũy
+
+            San_Sang --> Dang_Truyen_File: Bắt đầu truyền file (cửa sổ trượt + CUBIC + SACK)
+
             state Dang_Truyen_File {
-                [*] --> Trong_Hang_Doi
-                Trong_Hang_Doi --> Dang_Chuyen_Chunks: Chia nhỏ file thành các chunks qua UDP Socket
-                Dang_Chuyen_Chunks --> Xu_Ly_Mat_Gói: Mất gói tin / Sắp xếp sai thứ tự (Out-of-order)
-                Xu_Ly_Mat_Gói --> Dang_Chuyen_Chunks: Kích hoạt Fast Retransmit (SACK_LOSS_THRESHOLD >= 2 blocks) hoặc Timeout (RTO = 0.5s)
-                Dang_Chuyen_Chunks --> Hoan_Tat_Truyyen: Kiểm tra toàn vẹn CRC32 & Ghi file thành công vào Storage
+                [*] --> Chuan_Bi
+                Chuan_Bi --> Dang_Gui_Chunk: Tính SHA-256, chia chunk, gửi metadata
+                Dang_Gui_Chunk --> Xu_Ly_Mat_Goi: Mất gói hoặc đến sai thứ tự
+                Xu_Ly_Mat_Goi --> Dang_Gui_Chunk: Fast Retransmit (từ 2 gói phía sau đã được SACK) hoặc hết RTO 0,5 s
+                Dang_Gui_Chunk --> Dang_Xac_Minh: Bên nhận đã ghép đủ chunk
+                Dang_Gui_Chunk --> That_Bai: Một gói bị gửi lại quá 12 lần
+                Dang_Xac_Minh --> Hoan_Tat: SHA-256 khớp, lưu vào storage/downloads
+                Dang_Xac_Minh --> That_Bai: SHA-256 sai
+                Hoan_Tat --> [*]
+                That_Bai --> [*]
             }
-            
-            Dang_Truyen_File --> San_Sang: Tiến trình truyền file hoàn tất hoặc gặp lỗi
+
+            Dang_Truyen_File --> San_Sang: Truyền file hoàn tất hoặc gặp lỗi
         }
     }
 
-    Phien_Da_Ket_Noi --> Cho_Ranh_Roi: Mất kết nối TCP / Server Timeout / Bị đá khỏi phòng (Kicked)
+    Phien_Da_Ket_Noi --> Cho_Ranh_Roi: Mất kết nối TCP / Server timeout / Bị kick trên dashboard
     Phien_Da_Ket_Noi --> Su_Co: Đứt đường truyền mạng LAN / Lỗi Socket Engine nghiêm trọng
 ```
 
 ### 1.2 Module Coupling & Responsibilities
-* **`core/protocol.py`:** Định nghĩa định dạng nhị phân của gói tin (`Packet`), tính toán checksum `CRC-32`, và mã hóa/giải mã các khối `SACK`.
+* **`core/protocol.py`:** Định nghĩa định dạng nhị phân của gói tin (`Packet`), tính toán checksum (16 bit thấp của CRC-32), và mã hóa/giải mã các khối `SACK`.
 * **`core/crypto.py`:** Cung cấp lớp bảo mật `CryptoEngine` sử dụng mã hóa đối xứng **AES-128-CBC** với vector khởi tạo ngẫu nhiên (`IV`) và đệm `PKCS7`.
 * **`core/state.py`:** Lưu trữ trạng thái đồng bộ đa luồng (`ClientState`) đóng vai trò là cầu nối dữ liệu giữa `SocketEngine` và `LocalAPIServer`.
 * **`network/central_client.py` & `network/central_server.py`:** Duy trì phiên kết nối TCP bền vững để xác thực người dùng, cấp phát `session_id`, đồng bộ danh sách peer trực tuyến (`roster`), và chuyển tiếp gói tin UDP (`RLY1`).
@@ -136,7 +143,7 @@ Mặt phẳng điều khiển sử dụng kết nối **TCP Persistent** với �
        ]
      }
      ```
-   * *Thất bại:* Trả về `"success": false` kèm trường `"error"` (trùng tên người dùng, sai định dạng cổng UDP).
+   * *Thất bại:* Trả về `"success": false` kèm trường `"error"` (tên rỗng, trùng tên đang online không phân biệt hoa/thường, sai cổng UDP ngoài khoảng 1–65535).
 
 ### 2.2 Presence, Heartbeat & Diagnostics
 * **Roster Synchronization (`roster`):** Bất cứ khi nào có client đăng nhập mới, ngắt kết nối, hoặc bị quản trị viên kick, Server phát quảng bá danh sách cập nhật tới toàn bộ kết nối TCP hiện hành:
@@ -156,14 +163,14 @@ Mặt phẳng điều khiển sử dụng kết nối **TCP Persistent** với �
 
 ## 3. DATA PLANE BINARY PACKET FORMAT (UDP — PORT 9002)
 
-Tất cả các gói tin trên mặt phẳng dữ liệu đều tuân thủ cấu trúc Header cố định **24 bytes** theo chuẩn thứ tự byte mạng (**Big-Endian / Network Byte Order**, format `!HBBIIIIHH`).
+Tất cả các gói tin trên mặt phẳng dữ liệu đều tuân thủ cấu trúc Header cố định **24 bytes** theo chuẩn thứ tự byte mạng (**Big-Endian / Network Byte Order**, format `!HBBIIIIHH`: 2+1+1+4+4+4+4+2+2 = 24).
 
 ### 3.1 Binary Header Layout
 
 ```
 +---------------+---------+---------+------------+-----------+----------+----------+-------------+------------+------------------+
 |  Magic Number | Version |  Flags  | Session ID | Stream ID | Seq Num  | ACK Num  | Payload Len |  Checksum  |     Payload      |
-|   (0x4E41)    |   (1)   | (1B bit)|  (uint32)  | (uint32)  | (uint32) | (uint32) |  (uint16)   |  (CRC-16)  |  (AES / SACK)    |
+|   (0x4E41)    |   (1)   |(bitmask)|  (uint32)  | (uint32)  | (uint32) | (uint32) |  (uint16)   |(CRC32/16b) |  (AES / SACK)    |
 +---------------+---------+---------+------------+-----------+----------+----------+-------------+------------+------------------+
 |<-- 2 Bytes -->|<--1B--->|<--1B--->|<-- 4B ---->|<-- 4B --->|<-- 4B -->|<-- 4B -->|<--- 2B --->|<--- 2B --->|<-- Variable B -->|
 |<---------------------------------------------- HEADER (24 Bytes) ------------------------------------------->|<----- DATA ----->|
@@ -178,23 +185,23 @@ Tất cả các gói tin trên mặt phẳng dữ liệu đều tuân thủ cấ
 | **Flags** | 1 Byte | `uint8` | Mặt nạ bit (Bitmask) xác định loại gói tin điều khiển hoặc dữ liệu. |
 | **Session ID** | 4 Bytes | `uint32` | Mã định danh phiên của người gửi do Central Server cấp phát. |
 | **Stream ID** | 4 Bytes | `uint32` | Mã định danh luồng độc lập nhằm loại bỏ **Head-of-Line (HoL) Blocking**. |
-| **Seq Num** | 4 Bytes | `uint32` | Số thứ tự đơn điệu tăng dần trên từng `Stream ID` (bắt đầu từ `1`). |
-| **ACK Num** | 4 Bytes | `uint32` | Số thứ tự tích lũy (Cumulative ACK) cho biết byte/gói tiếp theo bên nhận đang chờ. |
+| **Seq Num** | 4 Bytes | `uint32` | Số thứ tự đơn điệu tăng dần trên từng `Stream ID` (bắt đầu từ `1`; gói ACK mang giá trị `0`). |
+| **ACK Num** | 4 Bytes | `uint32` | Số thứ tự tích lũy (Cumulative ACK): số `Seq` kế tiếp mà bên nhận đang chờ. |
 | **Payload Len** | 2 Bytes | `uint16` | Độ dài thực tế tính bằng byte của phần `Payload` theo sau Header. |
-| **Checksum** | 2 Bytes | `uint16` | 16 bit thấp của mã băm `zlib.crc32(Header_Zero_CRC + Payload) & 0xFFFF`. |
+| **Checksum** | 2 Bytes | `uint16` | **16 bit thấp của CRC-32**: `zlib.crc32(Header_Zero_CRC + Payload) & 0xFFFF`. Dùng để phát hiện lỗi truyền, không phải xác thực. |
 
 ### 3.3 Control Bitmask Flags
 
 | Flag Name | Hex Value | Binary | Description |
 | :--- | :--- | :--- | :--- |
-| `FLAG_AUTH` | `0x01` | `00000001` | Gói tin xác thực phiên làm việc. |
-| `FLAG_DISCOV` | `0x02` | `00000010` | Gói tin quảng bá khám phá peer nội mạng (`255.255.255.255`). |
+| `FLAG_AUTH` | `0x01` | `00000001` | Dự phòng; đăng nhập hiện đi qua TCP nên chưa sử dụng. |
+| `FLAG_DISCOV` | `0x02` | `00000010` | Gói tin quảng bá khám phá peer nội mạng (`255.255.255.255`); chỉ dùng ở chế độ P2P. |
 | `FLAG_MSG` | `0x04` | `00000100` | Gói tin mang thông điệp văn bản (Chat message). |
 | `FLAG_FILE` | `0x08` | `00001000` | Gói tin mang metadata khởi tạo tệp hoặc chunk dữ liệu nhị phân của tệp. |
 | `FLAG_ACK` | `0x10` | `00010000` | Gói tin xác nhận đã nhận dữ liệu (kèm theo SACK blocks trong payload). |
-| `FLAG_HEARTBEAT`| `0x20` | `00100000` | Gói tin duy trì kết nối giữa các peer. |
-| `FLAG_SYN` | `0x40` | `01000000` | Khởi tạo đồng bộ luồng. |
-| `FLAG_FIN` | `0x80` | `10000000` | Kết thúc luồng truyền dữ liệu. |
+| `FLAG_HEARTBEAT`| `0x20` | `00100000` | Gói tin duy trì kết nối giữa các peer; chỉ dùng ở chế độ P2P. |
+| `FLAG_SYN` | `0x40` | `01000000` | Dự phòng cho khởi tạo luồng; chưa sử dụng. |
+| `FLAG_FIN` | `0x80` | `10000000` | Dự phòng cho kết thúc luồng; chưa sử dụng. |
 
 ### 3.4 Server UDP Relay Envelope (`RLY1`)
 Khi hoạt động ở chế độ Client-Server trung tâm, gói tin nhị phân `Packet` được bọc trong một phong bì định tuyến có tiền tố `RLY1` (4 bytes) kèm JSON metadata:
@@ -208,6 +215,12 @@ Khi hoạt động ở chế độ Client-Server trung tâm, gói tin nhị phâ
   RLY1{"type":"deliver","sender_session_id":284910234,"packet":"<Base64_Packet>"}
   ```
 
+`target_session_id = 0` biểu thị broadcast tới các client còn lại; trên thực tế client gửi riêng một bản (với cửa sổ trượt riêng) cho từng peer.
+
+**Kiểm tra của Server trước khi chuyển tiếp:** IP và cổng UDP nguồn khớp phiên đăng nhập; `Session ID` trong gói khớp người gửi; tên file không chứa đường dẫn; kích thước file không quá 200 MB; số chunk phù hợp kích thước; sequence number nằm trong khoảng đã khai báo; số lần gửi lại không vượt quá 12.
+
+**Kích thước datagram:** gói `Packet` tối đa khoảng 1400 byte. Base64 làm tăng kích thước thêm 4/3 (khoảng 1870 byte), cộng JSON thành khoảng 2 KB, vượt MTU 1500 nên datagram relay có thể bị phân mảnh IP (xem mục 6 và mục 8).
+
 ---
 
 ## 4. STREAM MULTIPLEXING & HoL BLOCKING ELIMINATION
@@ -216,9 +229,11 @@ Khi hoạt động ở chế độ Client-Server trung tâm, gói tin nhị phâ
 
 * **`Stream ID = 0` (Global Broadcast Chat):** Kênh trò chuyện chung toàn mạng.
 * **`Stream ID = private_stream_id(A, B)` (Private Unicast Chat):** Kênh trò chuyện riêng tư giữa 2 peer, tính toán tất định bằng hàm băm:
-  $$\text{StreamID} = \text{CRC32}(\text{"}\min(\text{ID}_A, \text{ID}_B)\text{:}\max(\text{ID}_A, \text{ID}_B)\text{"}) \pmod{2^{32}}$$
+  $$\text{StreamID} = \text{CRC32}(\text{"}\min(\text{ID}_A, \text{ID}_B)\text{:}\max(\text{ID}_A, \text{ID}_B)\text{"}) \bmod 2^{32}$$
   *(Nếu kết quả $\le 1$, cộng thêm $2$ để tránh xung đột với kênh hệ thống).*
-* **`Stream ID = Random(2, 0xFFFFFFFE)` (Ephemeral File Transfer Stream):** Mỗi lần truyền một tập tin mới sẽ khởi tạo một `Stream ID` ngẫu nhiên riêng biệt. Hàng đợi truyền lại (`SlidingWindowSender`) và bộ đệm sắp xếp (`StreamReceiver`) hoạt động độc lập theo khóa `(stream_id, peer_endpoint)`, đảm bảo tin nhắn chat luôn được xử lý ngay lập tức.
+* **`Stream ID = Random(2, 0xFFFFFFFE)` (Ephemeral File Transfer Stream):** Mỗi lần truyền một tập tin mới sẽ khởi tạo một `Stream ID` ngẫu nhiên riêng biệt.
+
+Hàng đợi truyền lại (`SlidingWindowSender`) và bộ đệm sắp xếp (`StreamReceiver`) hoạt động độc lập theo khóa `(stream_id, peer)`, trong đó `peer` là `Session ID` của đối phương ở chế độ relay (hoặc IP/cổng UDP ở chế độ P2P). Nhờ vậy gói file bị mất chỉ làm chậm stream file đó, còn tin nhắn chat vẫn được xử lý ngay.
 
 ---
 
@@ -236,26 +251,29 @@ Khi gửi gói tin có cờ `FLAG_ACK`, phần `Payload` chứa danh sách các 
 ```
 
 * Mỗi khối biểu diễn nửa khoảng `[left, right)` dưới dạng số nguyên không dấu 32-bit (`!II`), tuân thủ điều kiện: $1 \le \text{left}_1 < \text{right}_1 \le \text{left}_2 < \text{right}_2 \le \text{0xFFFFFFFF}$.
-* **Fast Retransmit:** Nếu bên gửi nhận thấy có ít nhất `SACK_LOSS_THRESHOLD = 2` khối SACK nằm phía trên một gói tin chưa được xác nhận, gói tin đó được đánh dấu mất và truyền lại ngay lập tức mà không cần chờ hết thời gian `RTO = 0.5s`.
+* **Fast Retransmit:** Nếu bên gửi nhận thấy có ít nhất `SACK_LOSS_THRESHOLD = 2` **gói** nằm phía trên một gói chưa được xác nhận đã được SACK (đếm theo gói, không đếm theo block), gói đó được đánh dấu mất và truyền lại ngay mà không cần chờ hết `RTO = 0.5s`.
+  *Ví dụ:* gửi gói 1–5, bên nhận chỉ có 2, 4, 5. ACK mang `ack = 1` và hai block `[2,3)`, `[4,6)`. Gói 1 có 3 gói phía trên đã được SACK, gói 3 có 2 gói (4 và 5), nên cả hai được gửi lại ngay dù gói 3 chỉ có một block phía trên.
 
 ### 5.2 TCP CUBIC Congestion Control (RFC 8312)
-Mỗi `SlidingWindowSender` duy trì một cửa sổ tắc nghẽn động (`cwnd`) khởi tạo bằng `4.0` gói tin (giới hạn tối đa `window_size = 8` gói):
-* **Giai đoạn Slow Start ($\text{cwnd} < \text{ssthresh}$):** Tăng tuyến tính $\text{cwnd} \leftarrow \text{cwnd} + 1$ theo mỗi gói được xác nhận.
+Mỗi `SlidingWindowSender` duy trì một cửa sổ tắc nghẽn động (`cwnd`) khởi tạo bằng `4.0` gói tin (tối thiểu `2.0`, giới hạn tối đa `window_size = 8` gói, `ssthresh` ban đầu bằng `8`):
+* **Giai đoạn Slow Start ($\text{cwnd} < \text{ssthresh}$):** Mỗi gói được xác nhận làm $\text{cwnd}$ tăng thêm 1, nên sau mỗi vòng RTT $\text{cwnd}$ gần như nhân đôi.
 * **Giai đoạn Congestion Avoidance (CUBIC Function):**
   $$W(t) = C \cdot (t - K)^3 + W_{\max}$$
   Trong đó: $C = 0.4$, $\beta = 0.7$, $t$ là thời gian trôi qua kể từ lần mất gói gần nhất, và điểm uốn $K$ được tính bằng:
   $$K = \sqrt[3]{\frac{W_{\max} \cdot (1 - \beta)}{C}}$$
-* **TCP-Friendly Region:** Tại mỗi bước cập nhật, thuật toán đối chiếu với mô hình TCP Reno ($W_{\text{tcp}}(t)$) và chọn $\max(W(t), W_{\text{tcp}}(t))$ để đảm bảo thông lượng công bằng.
-* **Phản ứng khi mất gói (Loss Event):** Cập nhật $W_{\max} = \text{cwnd}$, giảm $\text{ssthresh} = \max(2.0, \text{cwnd} \cdot \beta)$, đặt lại $\text{cwnd} = \text{ssthresh}$, và khởi tạo chu kỳ CUBIC mới.
+* **TCP-Friendly Region:** Tại mỗi bước cập nhật, thuật toán đối chiếu với mô hình TCP Reno ($W_{\text{tcp}}(t)$) và chọn $\max(W(t), W_{\text{tcp}}(t))$ để đảm bảo thông lượng công bằng. RTT trong công thức Reno được ước lượng bằng $\max(0.01, RTO/2)$, không đo RTT thực tế.
+* **Phản ứng khi mất gói (Loss Event):** Cập nhật $W_{\max} = \text{cwnd}$, giảm $\text{ssthresh} = \max(2.0, \text{cwnd} \cdot \beta)$, đặt lại $\text{cwnd} = \text{ssthresh}$, và khởi tạo chu kỳ CUBIC mới. $\text{cwnd}$ chỉ giảm một lần cho mỗi đợt mất gói.
+* **Giới hạn thử lại:** Nếu một gói bị gửi lại quá `MAX_RETRIES = 12` lần, stream được đánh dấu thất bại và bên gửi báo lỗi thay vì chờ vô hạn.
 
 ---
 
 ## 6. RELIABLE FILE TRANSFER LIFECYCLE
 
-Quá trình truyền tập tin kích thước lớn qua UDP tuân thủ quy trình 3 bước khép kín để chống phân mảnh IP (IP Fragmentation) và đảm bảo toàn vẹn dữ liệu:
+Quá trình truyền tập tin kích thước lớn qua UDP gồm 3 bước, nhằm hạn chế phân mảnh IP và đảm bảo toàn vẹn dữ liệu:
 
 1. **Chunking & Integrity Hashing (`FileTransferManager`):**
-   * Tập tin gốc được đọc tuần tự và cắt thành các mảnh kích thước tối đa **`1350 bytes`** (đảm bảo tổng kích thước gói tin sau khi cộng Header 24 bytes, AES IV/Padding 32 bytes và Relay JSON luôn nằm gọn dưới ngưỡng `MTU = 1500 bytes`).
+   * Tập tin gốc được đọc tuần tự và cắt thành các mảnh kích thước tối đa **`1350 bytes`**. Sau AES-CBC/PKCS7 mỗi chunk tối đa 1376 byte (IV 16 + bản mã 1360); cộng Header 24 byte thành khoảng 1400 byte; cộng UDP và IPv4 là 1428 byte, dưới MTU 1500 khi gửi trực tiếp (chế độ P2P).
+   * Khi đi qua relay, phong bì Base64 và JSON làm datagram tăng lên khoảng 2 KB, nên có thể bị phân mảnh IP. Cơ chế SACK và gửi lại bù cho trường hợp mất mảnh; hướng cải thiện là thay phong bì Base64 bằng định dạng nhị phân.
    * Toàn bộ nội dung tệp được băm bằng thuật toán **SHA-256**.
 2. **Metadata Initialization (`seq_num = 1`):**
    * Gói tin đầu tiên trên luồng truyền file mang cờ `FLAG_FILE` chứa chuỗi JSON metadata được mã hóa AES:
@@ -271,20 +289,33 @@ Quá trình truyền tập tin kích thước lớn qua UDP tuân thủ quy trì
      ```
 3. **Chunk Transmission & Reassembly (`seq_num = 2 ... N+1`):**
    * Các chunk dữ liệu được mã hóa độc lập và đẩy vào cửa sổ trượt CUBIC.
-   * Tại bên nhận (`StreamManager`), sau khi thu thập đủ `total_chunks` theo đúng thứ tự từ `StreamReceiver`, hệ thống ghép nối các byte và đối chiếu mã băm **SHA-256**. Nếu khớp, tệp được lưu vào thư mục `storage/downloads/` (tự động đánh số hậu tố `_1`, `_2` nếu trùng tên).
+   * Tại bên nhận (`StreamManager`), sau khi thu thập đủ `total_chunks` theo đúng thứ tự từ `StreamReceiver`, hệ thống ghép nối các byte và đối chiếu mã băm **SHA-256**. Nếu khớp, tệp được lưu vào thư mục `storage/downloads/` (tự động đánh số hậu tố `_1`, `_2` nếu trùng tên). Nếu SHA-256 sai, bên nhận đánh dấu truyền thất bại.
 
 ---
 
 ## 7. CRYPTOGRAPHIC SECURITY LAYER
 
-Tất cả các trường `Payload` của gói tin `FLAG_MSG` và `FLAG_FILE` đều được mã hóa đầu-cuối (End-to-End Payload Encryption) trước khi đóng gói vào `Packet`:
+Payload của gói tin `FLAG_MSG` và `FLAG_FILE` được mã hóa bằng khóa chung của các client trước khi đóng gói vào `Packet`; Central Server chỉ chuyển tiếp và không cần khóa để giải mã payload:
 
 * **Thuật toán:** **AES-128** (Advanced Encryption Standard với độ dài khóa 128-bit).
 * **Chế độ vận hành:** **CBC** (Cipher Block Chaining) kết hợp đệm chuẩn **PKCS7** (block size 128-bit).
+* **Khóa:** 16 byte lấy từ biến môi trường `CNET_SECRET_KEY`; nếu không đặt, dùng khóa tĩnh trong mã nguồn. Mọi client phải dùng cùng một khóa.
 * **Cấu trúc Ciphertext trên đường truyền:**
   ```
   +------------------------+---------------------------------------+
   |  Random IV (16 Bytes)  |   AES-128-CBC Ciphertext (N * 16 B)   |
   +------------------------+---------------------------------------+
   ```
-* Mỗi gói tin sử dụng một vector khởi tạo ngẫu nhiên `IV = os.urandom(16)` độc lập, ngăn chặn triệt để việc phân tích mẫu lưu lượng (Traffic Pattern Analysis) ngay cả khi người dùng gửi lặp lại cùng một nội dung tin nhắn.
+* Mỗi gói tin sử dụng một vector khởi tạo ngẫu nhiên `IV = os.urandom(16)` độc lập, nên gửi lặp lại cùng một nội dung vẫn cho bản mã khác nhau.
+* **Không được mã hóa:** Header, gói ACK/SACK và các thông điệp điều khiển TCP. Vì vậy kích thước và thời điểm gói vẫn quan sát được.
+
+---
+
+## 8. HẠN CHẾ ĐÃ BIẾT
+
+* Khóa AES dùng chung, không có trao đổi khóa; CBC không kèm MAC nên không chống sửa đổi có chủ đích.
+* RTO cố định 0,5 giây; RTT trong công thức CUBIC/Reno được ước lượng từ RTO, không đo thực tế.
+* Phong bì relay dùng Base64 nên datagram tăng lên khoảng 2 KB và có thể bị phân mảnh IP.
+* Stream ID chat riêng (CRC-32) và stream ID file (ngẫu nhiên) có thể va chạm với xác suất rất nhỏ.
+* Bên gửi chưa được báo khi bên nhận ghép file thất bại.
+* `to_json_snapshot()` chỉ là bản sao nông của trạng thái.
