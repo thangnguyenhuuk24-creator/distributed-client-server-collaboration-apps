@@ -1,8 +1,16 @@
 # Báo cáo kỹ thuật - Ứng dụng cộng tác Client-Server trên UDP Streaming
 
-Nov 13, 2026 · @tim
+Tháng 11 năm 2026
 
-Ứng dụng dùng TCP cho đăng nhập và danh sách người online, còn chat và truyền file chạy trên giao thức tin cậy tự thiết kế trên UDP (cửa sổ trượt, SACK, CUBIC, AES-128-CBC), qua một Central Server và client có Web UI cục bộ. Môn: Network Application Development (CO3093/CO3094), HCMUT. Thành viên: \[điền họ tên - MSSV\].
+Ứng dụng dùng TCP cho đăng nhập và danh sách người online, còn chat và truyền file chạy trên giao thức tin cậy tự thiết kế trên UDP (cửa sổ trượt, SACK, CUBIC, AES-128-CBC), qua một Central Server và client có Web UI cục bộ. Môn: Network Application Development (CO3093/CO3094), HCMUT. Giảng viên hướng dẫn: Bùi Xuân Giang.
+
+| Thành viên | Mã số sinh viên |
+| --- | --- |
+| Phan Anh Khoa | 2411647 |
+| Phan Thanh Bình | 2410357 |
+| Nguyễn Đức Thái Huy | 2411209 |
+| Nguyễn Hữu Thắng | 2413238 |
+| Lê Quốc Thái | 2313097 |
 
 ## Giới thiệu
 
@@ -46,6 +54,8 @@ Client A và Client B cùng chạy một cấu trúc; chúng không gửi gói t
 | Giao diện | `web/central_dashboard.py` | Dashboard quản trị server: uptime, user, throughput, tiến độ file, kick |
 
 **Mô hình đồng thời.** Dùng `threading`. Server có 1 thread accept TCP, 1 thread relay UDP và 1 thread cho mỗi client đang kết nối. Client có thread nhận UDP, thread gửi lại, thread đọc roster từ TCP, thread ping, thread HTTP, và mỗi lần gửi file chạy trên một thread riêng. Dữ liệu dùng chung được bảo vệ bằng `RLock`; server sao chép danh sách người dùng trong khóa rồi mới gửi ra ngoài khóa, nên một client chậm không giữ khóa của cả server. `tools/load_test.py` chạy 20 client đồng thời để kiểm tra mức 10-20 client của đề.
+
+**Lấy dữ liệu từ stream bất đồng bộ.** Thread nhận UDP giao từng gói cho `StreamReceiver` của đúng stream rồi cập nhật `ClientState`; Web UI không chờ mạng mà đọc `ClientState` qua HTTP loopback (polling 500 ms). Vì vậy một stream đang chờ gửi lại gói không làm đứng giao diện hay các stream khác.
 
 ## 2. Đặc tả giao thức
 
@@ -99,7 +109,7 @@ Client -> Server: RLY1{"type":"relay","sender_session_id":S,"target_session_id":
 Server -> Client: RLY1{"type":"deliver","sender_session_id":S,"packet":"<base64>"}
 ```
 
-`target_session_id = 0` nghĩa là server phát tới mọi người còn lại; client hiện gửi một bản riêng cho từng peer thay vì dùng giá trị này. Với gói file, phong bì thêm `file` (`transfer_id`, `filename`, `filesize`, `total_chunks`, `first_seq`) và `retry_count` để dashboard theo dõi tiến độ và số lần gửi lại. Trước khi chuyển tiếp, server kiểm tra: IP và cổng gửi khớp với phiên đã đăng nhập, `session_id` trong gói khớp người gửi, tên file không chứa đường dẫn, file không quá 200 MB, `total_chunks` khớp kích thước, `seq` nằm trong khoảng đã khai báo và `retry_count` không quá 12.
+`target_session_id = 0` nghĩa là server phát tới mọi người còn lại; client hiện gửi một bản riêng cho từng peer thay vì dùng giá trị này. Với gói file, phong bì thêm `file` (`transfer_id`, `filename`, `filesize`, `total_chunks`, `first_seq`) và `retry_count` để dashboard theo dõi tiến độ và số lần gửi lại. Trước khi chuyển tiếp, server kiểm tra: IP và cổng gửi khớp với phiên đã đăng nhập, `session_id` trong gói khớp người gửi, tên file không chứa đường dẫn, file không quá 200 MB, `total_chunks` khớp kích thước, `seq` nằm trong khoảng đã khai báo và `retry_count` không quá 12. Base64 làm gói tăng thêm khoảng 4/3 lần kích thước (xem mục 4, khó khăn 3).
 
 ### 2.4 Stream và chống Head-of-Line blocking
 
@@ -111,12 +121,14 @@ Server -> Client: RLY1{"type":"deliver","sender_session_id":S,"packet":"<base64>
 
 Mỗi cặp (Stream ID, peer) có bộ gửi và bộ nhận riêng, với số thứ tự, cửa sổ trượt và `cwnd` riêng. Vì vậy chunk file bị mất chỉ làm chậm chính stream file đó; tin nhắn trên stream khác vẫn được giao ngay.
 
+Thiết kế stream độc lập (mỗi luồng có số thứ tự và cửa sổ riêng) lấy ý tưởng từ lớp truyền tải hướng thông điệp của Valve GameNetworkingSockets và QUIC (RFC 9000), được đơn giản hóa cho phạm vi bài tập.
+
 ### 2.5 Độ tin cậy: số thứ tự, ACK và SACK
 
 - **Số thứ tự:** tăng đơn điệu theo từng gói trong mỗi stream, bắt đầu từ 1.
 - **Bên nhận** (`StreamReceiver`): chỉ nhận gói có `seq` trong `[expected, expected + 8)`, lưu gói đến sớm vào bộ đệm, loại gói trùng, giao dữ liệu lên tầng trên đúng thứ tự, rồi trả ACK tích lũy kèm các khối SACK.
 - **Payload SACK:** `Version` (1 byte, giá trị 1), `Block Count` (1 byte, tối đa 32), sau đó mỗi khối là một nửa khoảng `[left, right)` gồm 2 số uint32 (8 byte), theo kiểu RFC 2018.
-- **Bên gửi** (`SlidingWindowSender`): số gói chưa ACK không vượt `min(8, cwnd)`. RTO cố định 0,5 giây. Chỉ gửi lại gói chưa được SACK; gói có từ 2 khối SACK nằm phía trên mà vẫn chưa được xác nhận bị gửi lại ngay (fast retransmit) mà không chờ hết RTO.
+- **Bên gửi** (`SlidingWindowSender`): số gói chưa ACK không vượt `min(8, cwnd)`. RTO cố định 0,5 giây. Chỉ gửi lại gói chưa được SACK; gói chưa được xác nhận mà đã có từ 2 gói phía trên được SACK (đếm theo gói, không đếm theo khối) bị gửi lại ngay (fast retransmit) mà không chờ hết RTO.
 - **Bỏ cuộc:** một gói bị gửi lại quá 12 lần thì stream bị đánh dấu thất bại, bên gửi báo lỗi thay vì treo vô hạn.
 
 ### 2.6 Điều khiển tắc nghẽn CUBIC
@@ -127,7 +139,7 @@ Mỗi cặp (Stream ID, peer) có bộ gửi và bộ nhận riêng, với số 
 W(t) = C\,(t - K)^3 + W_{max}, \qquad K = \sqrt[3]{\frac{W_{max}\,(1-\beta)}{C}}
 ```
 
-Mỗi lần cập nhật, bên gửi so với mô hình TCP Reno (vùng TCP-friendly) và lấy giá trị lớn hơn. Khi có gói hết RTO, `cwnd` giảm đúng một lần cho mỗi đợt mất gói: `W_max = cwnd`, `ssthresh = max(2, 0,7 × cwnd)`, `cwnd = ssthresh`, và một chu kỳ CUBIC mới bắt đầu.
+Mỗi lần cập nhật, bên gửi so với mô hình TCP Reno (vùng TCP-friendly) và lấy giá trị lớn hơn; RTT trong công thức Reno được ước lượng từ RTO chứ không đo thực tế. Khi có gói hết RTO, `cwnd` giảm đúng một lần cho mỗi đợt mất gói: `W_max = cwnd`, `ssthresh = max(2, 0,7 × cwnd)`, `cwnd = ssthresh`, và một chu kỳ CUBIC mới bắt đầu.
 
 ### 2.7 Mã hóa
 
@@ -138,7 +150,7 @@ Payload của `FLAG_MSG` và `FLAG_FILE` (kể cả metadata và từng chunk fi
 1. Bên gửi đọc file, cắt thành chunk tối đa **1350 byte** và tính SHA-256 của toàn file.
 2. Gói đầu của stream file mang metadata JSON đã mã hóa: `filename`, `filesize`, `total_chunks`, `sha256`, `transfer_id`, `chat_stream_id`.
 3. Các gói tiếp theo mang từng chunk đã mã hóa, đi qua cửa sổ trượt CUBIC của stream file.
-4. Bên nhận ghép đủ `total_chunks` theo thứ tự, so SHA-256; nếu khớp thì lưu vào `storage/downloads/` (thêm hậu tố `_1`, `_2` khi trùng tên), nếu lệch thì báo "Nhận thất bại".
+4. Bên nhận ghép đủ `total_chunks` theo thứ tự, so SHA-256; nếu khớp thì lưu vào `storage/downloads/` (thêm hậu tố `_1`, `_2` khi trùng tên), nếu lệch thì báo "Truyền thất bại".
 
 ### 2.9 Sơ đồ trạng thái
 
@@ -174,7 +186,7 @@ File dùng cùng cơ chế ACK/SACK nhưng chạy trên một stream ngẫu nhi�
 
 Năm khó khăn mạng chính khi hiện thực; mỗi khó khăn đều có test kiểm chứng trong thư mục `test/`.
 
-**1. Mất gói, trùng gói và đảo thứ tự trên UDP.** *Vấn đề:* khi giả lập mất 10-15% gói, chat đến thiếu, trùng hoặc sai thứ tự, file bị hỏng. *Nguyên nhân:* UDP không bảo đảm giao nhận và thứ tự. *Giải pháp:* đánh số thứ tự gói theo từng stream, bên nhận trả ACK tích lũy kèm SACK, giữ gói đến sớm trong bộ đệm, loại gói trùng và chỉ giao lên trên khi đủ thứ tự; bên gửi chỉ gửi lại gói chưa được SACK, sau RTO 0,5 giây hoặc ngay khi thấy từ 2 khối SACK phía trên. *Kiểm chứng:* `test_private_chat_in_order_exactly_once_with_loss` (20 tin, mất 15%) và `test_file_survives_10_percent_packet_loss`.
+**1. Mất gói, trùng gói và đảo thứ tự trên UDP.** *Vấn đề:* khi giả lập mất 10-15% gói, chat đến thiếu, trùng hoặc sai thứ tự, file bị hỏng. *Nguyên nhân:* UDP không bảo đảm giao nhận và thứ tự. *Giải pháp:* đánh số thứ tự gói theo từng stream, bên nhận trả ACK tích lũy kèm SACK, giữ gói đến sớm trong bộ đệm, loại gói trùng và chỉ giao lên trên khi đủ thứ tự; bên gửi chỉ gửi lại gói chưa được SACK, sau RTO 0,5 giây hoặc ngay khi đã có từ 2 gói phía trên được SACK. *Kiểm chứng:* `test_private_chat_in_order_exactly_once_with_loss` (20 tin, mất 15%) và `test_file_survives_10_percent_packet_loss`.
 
 **2. Head-of-Line blocking giữa chat và file.** *Vấn đề:* nếu dùng chung một chuỗi số thứ tự và một cửa sổ, một file lớn đang gửi lại gói sẽ chặn mọi tin nhắn phía sau. *Giải pháp:* tách dữ liệu thành các stream độc lập; mỗi cặp (Stream ID, peer) có bộ gửi, bộ nhận, cửa sổ trượt và `cwnd` riêng. *Kiểm chứng:* `test_chat_is_not_blocked_by_a_lossy_file_transfer` gửi 5 tin chat trong lúc file 400 KB vẫn đang truyền với 15% mất gói, và cả 5 tin đến đầy đủ.
 
@@ -186,27 +198,38 @@ Năm khó khăn mạng chính khi hiện thực; mỗi khó khăn đều có tes
 
 ## 5. Kiểm thử
 
-Bộ kiểm thử gồm 41 test case (đếm trong mã nguồn) chạy với server thật và socket engine thật trên localhost; các test đầu-cuối chèn mất gói giả lập vào socket UDP của client.
+Bộ kiểm thử gồm \[điền tổng số test, lấy ở dòng tổng kết cuối của `python -m test.run_tests`\] test case chạy với server thật và socket engine thật trên localhost; các test đầu-cuối chèn mất gói giả lập vào socket UDP của client.
 
 | Kịch bản | File | Số test | Kiểm chứng |
 | --- | --- | --- | --- |
 | Bắt tay TCP, đăng nhập | `test/test_step2.py` | 11 | Nhận ACK, ghi IP và cổng UDP, từ chối tên rỗng, tên trùng, cổng sai, JSON hỏng; 10 client đăng nhập đồng thời; client im lặng bị loại sau timeout |
+| Xác thực và trạng thái người dùng | `test/test_step3.py` | \[điền\] | Theo dõi user, IP, cổng và trạng thái đăng nhập |
+| Kết nối, ngắt kết nối đồng thời | `test/test_step4.py` | \[điền\] | Nhiều client vào và ra cùng lúc mà server không lỗi |
+| Định tuyến và broadcast | `test/test_step5.py` | \[điền\] | Chuyển tiếp chat chung và chat riêng tới đúng người nhận |
+| Truyền file UDP | `test/test_step6.py` | \[điền\] | Chia chunk, truyền và ghép lại file |
+| Timeout và chịu lỗi | `test/test_step7.py` | \[điền\] | Timeout, lỗi mạng, ngắt kết nối đột ngột, tắt an toàn |
 | Mã hóa | `test/test_step8.py` | 10 | Giải mã đúng văn bản tiếng Việt, dữ liệu nhị phân, payload lớn; IV ngẫu nhiên làm hai bản mã khác nhau; chuẩn hóa độ dài khóa |
 | Độ tin cậy và CUBIC | `test/test_retransmission.py` | 11 | Cửa sổ trượt, ACK tích lũy, SACK, chỉ gửi lại gói thiếu, RTO, giảm `cwnd` khi mất gói, bỏ cuộc sau 12 lần |
 | Đầu-cuối có mất gói | `test/test_e2e_network.py` | 6 | File 1 MB không mất gói; file 150 KB mất 10%; file qua relay mất 10%; chat riêng đúng thứ tự và đúng một lần khi mất 15%; chat không bị chặn bởi file; bên gửi bỏ cuộc khi bên nhận biến mất. Các file nhận được so SHA-256 với bản gốc |
 | Dashboard server | `test/test_central_dashboard.py` | 3 | Trạng thái, xuất và xóa log, dừng và khởi động lại server, kick client |
+| Tranh chấp tài nguyên | `test/test_thread_safety.py` | \[điền\] | Nhiều luồng cùng đọc ghi `ClientState` |
 | Tải 10-20 client | `tools/load_test.py` | - | 20 client đăng nhập cùng lúc, mọi client nhận đủ tin chat chung của những client còn lại, tùy chọn gửi thêm file 1 MB |
 
 Lệnh chạy từ thư mục gốc của dự án:
 
 ```bash
-python -m unittest discover -s test -t . -v
+python -m test.run_tests
 python tools/load_test.py --clients 20 --file-mb 1
 ```
 
 Ngoài ra có kiểm thử thủ công theo `README.md`: một server và hai client trên localhost trong ba cửa sổ terminal, và nhiều máy trong cùng mạng LAN.
 
-**Kết quả chạy:** \[dán ảnh chụp terminal sau khi chạy hai lệnh trên, và ảnh giao diện web hai client đang chat và gửi file\].
+**Kết quả chạy:**
+
+- Hình 5.1: \[ảnh chụp terminal sau `python -m test.run_tests`, thấy dòng tổng kết\]
+- Hình 5.2: \[ảnh chụp terminal sau `python tools/load_test.py --clients 20 --file-mb 1`, thấy `RESULT: PASS`\]
+- Hình 5.3: \[ảnh giao diện web của hai client đang chat và gửi file, thấy danh sách online và thanh tiến độ\]
+- Hình 5.4: \[ảnh dashboard server tại `127.0.0.1:9003`\]
 
 ## 6. Kết luận, hạn chế và tài liệu tham khảo
 
@@ -216,11 +239,11 @@ Ngoài ra có kiểm thử thủ công theo `README.md`: một server và hai cl
 | --- | --- | --- | --- |
 | 1 | Thiết kế giao thức, sơ đồ trạng thái | Mục 2 của báo cáo, `docs/Protocol_Spec.md` | - |
 | 2 | Bắt tay TCP | `central_server.py`, `central_client.py` | `test_step2.py` |
-| 3 | Đăng nhập, theo dõi user, IP, cổng | `session_id`, roster, `get_users()` | `test_step2.py` |
-| 4 | Đồng thời | Một thread cho mỗi client TCP, thread relay UDP | `load_test.py` (20 client) |
-| 5 | Định tuyến chat chung và riêng | UDP Relay, stream 0 và stream riêng | `test_e2e_network.py` |
-| 6 | Truyền file tin cậy | `streaming.py`, `reliability.py` | `test_e2e_network.py` |
-| 7 | Chịu lỗi | Ping, timeout 15 giây, giới hạn 12 lần gửi lại, try/except | `test_step2.py`, `test_e2e_network.py` |
+| 3 | Đăng nhập, theo dõi user, IP, cổng | `session_id`, roster, `get_users()` | `test_step2.py`, `test_step3.py` |
+| 4 | Đồng thời | Một thread cho mỗi client TCP, thread relay UDP | `test_step4.py`, `load_test.py` (20 client) |
+| 5 | Định tuyến chat chung và riêng | UDP Relay, stream 0 và stream riêng | `test_step5.py`, `test_e2e_network.py` |
+| 6 | Truyền file tin cậy | `streaming.py`, `reliability.py` | `test_step6.py`, `test_e2e_network.py` |
+| 7 | Chịu lỗi | Ping, timeout 15 giây, giới hạn 12 lần gửi lại, try/except | `test_step7.py`, `test_step2.py`, `test_e2e_network.py` |
 | 8 | Mã hóa | `crypto.py` (AES-128-CBC) | `test_step8.py` |
 | 9 | Web UI JavaScript thuần | `web/static/js/app.js`: tin nhắn, thanh tiến độ file, danh sách online | Thử thủ công |
 | 10 | Kiểm thử và chất lượng mã | `test/`, `tools/load_test.py` | Mục 5 |
@@ -229,7 +252,8 @@ Ngoài ra có kiểm thử thủ công theo `README.md`: một server và hai cl
 
 - Khóa AES dùng chung và không có bước trao đổi khóa; CBC không kèm MAC nên không chống được việc sửa đổi có chủ đích.
 - Phong bì relay dùng Base64 nên gói đi qua relay lớn khoảng 2 KB (mục 4, khó khăn 3).
-- Bên gửi không được báo khi bên nhận ghép file thất bại; bên nhận hiển thị "Nhận thất bại".
+- RTO cố định 0,5 giây; RTT trong công thức CUBIC/Reno được ước lượng từ RTO chứ không đo thực tế.
+- Bên gửi không được báo khi bên nhận ghép file thất bại; bên nhận hiển thị "Truyền thất bại".
 - Stream ID của chat riêng (CRC-32) và của file (ngẫu nhiên) có thể va chạm với xác suất rất nhỏ.
 - Web UI dùng `http.server` của thư viện chuẩn Python, không phải framework HTTP.
 
@@ -237,4 +261,6 @@ Ngoài ra có kiểm thử thủ công theo `README.md`: một server và hai cl
 
 - [RFC 8312: CUBIC for Fast Long-Distance Networks](https://datatracker.ietf.org/doc/html/rfc8312)
 - [RFC 2018: TCP Selective Acknowledgment Options](https://datatracker.ietf.org/doc/html/rfc2018)
+- [RFC 9000: QUIC, a UDP-Based Multiplexed and Secure Transport](https://datatracker.ietf.org/doc/html/rfc9000)
+- [Valve GameNetworkingSockets](https://github.com/ValveSoftware/GameNetworkingSockets)
 - Mã nguồn và `README.md` của dự án; `docs/Protocol_Spec.md`.
