@@ -4,7 +4,7 @@ Run this file with:
     python -m test.test_retransmission
 
 Example result:
-    Result: 11/11 tests passed
+    Result: 12/12 tests passed
 """
 
 import time
