@@ -19,20 +19,20 @@
 - [Kiểm thử tự động](#lệnh-chạy-unit-tests-tự-động)
 - [Hạn chế đã biết](#hạn-chế-đã-biết)
 - [Cấu trúc dự án](#cấu-trúc-dự-án)
-- [Tiêu chuẩn bảo mật (Security Layer)](#tiêu-chuẩn-bảo-mật-security-layer)
 - [Tài liệu tham khảo](#tài-liệu-tham-khảo)
 
 ---
 
 ## Tính năng chính
 
-- **Client-Server Handshake & Roster Sync (Step 2, 3, 4):** Bắt tay TCP tin cậy, cấp phát `session_id`, theo dõi địa chỉ IP/port đang hoạt động và cập nhật danh sách trực tuyến thời gian thực cho mọi client.
-- **Resilience & Concurrency (Step 4, 7):** Quản lý đa luồng (Multi-threaded TCP listener & UDP socket engine), tự động phát hiện ngắt kết nối đột ngột mà không gây crash server.
-- **UDP Chat Relay & Stream Multiplexing (Step 5):** Chuyển tiếp tin nhắn kênh chung và kênh riêng qua UDP Relay, loại bỏ hoàn toàn hiện tượng nghẽn đầu hàng (Head-of-Line Blocking) giữa các luồng.
-- **File Streaming & SACK Retransmission (Step 6):** Cắt nhỏ tệp tin thành các chunk an toàn ($\le 1350$ bytes), truyền qua UDP Relay ở chế độ server trung tâm (hoặc trực tiếp P2P khi không dùng server) với cơ chế Cumulative ACK kết hợp Selective ACK (SACK), cửa sổ trượt (Sliding Window) và tự động lắp ghép kiểm tra mã băm SHA-256.
-- **Congestion Control (Step 6):** Tích hợp thuật toán điều khiển tắc nghẽn TCP CUBIC chuẩn hóa theo RFC 8312 kèm vùng tương thích Reno (TCP-Friendly Region).
-- **Security Layer (Step 8):** Mã hóa đối xứng toàn bộ payload gói tin bằng thuật toán **AES-128-CBC** kết hợp đệm khối **PKCS#7** và Vector khởi tạo ngẫu nhiên (IV 16 bytes).
-- **Web Dashboard & UI:** Giao diện người dùng Web trực quan kèm dashboard quản trị loopback `9003` (uptime, ports, clients, chat/file throughput, tiến độ chunk, retransmission, logs và thao tác start/stop/kick).
+- **Quản lý phiên và trạng thái trực tuyến:** Máy khách đăng nhập qua kết nối TCP duy trì lâu dài. Máy chủ cấp `session_id`, quản lý danh sách người dùng trực tuyến và cập nhật danh sách khi có máy khách kết nối hoặc ngắt kết nối.
+- **Trò chuyện qua UDP:** Khi sử dụng máy chủ trung tâm, tin nhắn nhóm và tin nhắn riêng được chuyển tiếp qua UDP Relay. Nếu không cấu hình máy chủ trung tâm, các máy khách có thể tìm thấy nhau trong mạng LAN và trao đổi trực tiếp.
+- **Tách luồng dữ liệu:** Tin nhắn và dữ liệu truyền tệp được phân loại theo `stream_id`, với trạng thái thứ tự và truyền lại riêng cho từng luồng. Cách tổ chức này giúp hạn chế việc một luồng truyền làm chậm các luồng khác.
+- **Truyền tệp có kiểm soát lỗi:** Tệp được chia thành các khối dữ liệu tối đa 1350 byte. Xác nhận tích lũy, xác nhận chọn lọc (SACK), cửa sổ trượt và truyền lại giúp xử lý mất gói. Sau khi ghép tệp, hệ thống đối chiếu mã SHA-256.
+- **Điều khiển tốc độ gửi:** Bộ gửi UDP sử dụng cửa sổ tắc nghẽn giới hạn và một biến thể rút gọn dựa trên CUBIC, có xét đến vùng tăng trưởng thân thiện với TCP. Đây là cơ chế dành cho UDP, không phải triển khai đầy đủ CUBIC trên TCP.
+- **Mã hóa dữ liệu:** Trong cấu hình thông thường, dữ liệu trò chuyện và truyền tệp được mã hóa AES-128-CBC với đệm PKCS#7 và IV ngẫu nhiên 16 byte. Nếu thiếu thư viện `cryptography`, chương trình mặc định báo lỗi; chỉ khi đồng thời bật `ALLOW_INSECURE_XOR=1` mới sử dụng XOR dự phòng không an toàn.
+- **Giao diện và giám sát:** Ứng dụng cung cấp giao diện web cục bộ cho người dùng và bảng điều khiển quản trị máy chủ. Bảng điều khiển hiển thị trạng thái, người dùng, lưu lượng, tiến độ truyền tệp và nhật ký; đồng thời hỗ trợ một số thao tác như khởi động hoặc dừng máy chủ, ngắt kết nối máy khách.
+- **Xử lý đồng thời và timeout:** Các kết nối TCP, việc nhận gói UDP và bộ định thời truyền lại được xử lý bằng các luồng thực thi riêng. Cơ chế timeout giúp phát hiện máy khách mất kết nối hoặc không phản hồi.
 
 ---
 
@@ -48,14 +48,6 @@ Hệ thống hoạt động theo mô hình phân tách điều khiển và dữ 
 | **Client UDP Engine** | UDP | `9010+` | Gửi/nhận chat và file, trao đổi ACK/SACK qua relay hoặc trực tiếp P2P khi không dùng server trung tâm. |
 | **Client Local Web UI**| HTTP (Loopback) | `8080+` | Giao diện điều khiển cho người dùng. |
 
-```text
-[ Client A (Alice) ] <==== TCP (Control / Presence) =====> [ Central Server ]
-[ Client B (Bob)   ] <==== TCP (Control / Presence) =====> [ (TCP 9001, UDP 9002) ]
-        |                                                           ^
-        +---- UDP Relay Chat & File (qua Server) --------------------+
-        |
-        +<---- UDP Relay (Server chuyển tiếp từng datagram) ---------+
-```
 
 ---
 
@@ -239,14 +231,6 @@ network_app/
 ├── requirements.txt              # Danh sách thư viện bên ngoài (cryptography)
 └── README.md                     # Tài liệu hướng dẫn sử dụng và kiểm thử
 ```
-
----
-
-## Tiêu chuẩn bảo mật (Security Layer)
-
-- **Mã hóa Payload (Step 8):** Payload của chat (`FLAG_MSG`) và file (`FLAG_FILE`) được mã hóa bằng **AES-128-CBC** với đệm **PKCS#7** và IV ngẫu nhiên 16 bytes (`os.urandom(16)`) đặt đầu bản mã. Header, gói ACK/SACK và các gói điều khiển **không** được mã hóa. Khóa lấy từ biến môi trường `CNET_SECRET_KEY` (mặc định dùng khóa tĩnh trong mã nguồn); nên đặt cùng giá trị này trên mọi máy: `export CNET_SECRET_KEY=...`.
-- **Toàn vẹn:** Header + payload có checksum = 16 bit thấp của CRC-32 (phát hiện lỗi truyền, không phải xác thực). File được kiểm tra SHA-256 sau khi ghép.
-- **An toàn giao diện nội bộ:** Giao diện HTTP của Client (`:8080`) và Dashboard quản trị máy chủ (`:9003`) mặc định chỉ bind nghiêm ngặt vào địa chỉ Loopback `127.0.0.1`, ngăn ngừa rò rỉ dữ liệu phiên ra ngoài mạng LAN.
 
 ---
 
