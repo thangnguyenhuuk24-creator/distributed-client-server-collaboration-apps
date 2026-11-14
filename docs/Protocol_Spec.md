@@ -156,7 +156,7 @@ Mặt phẳng điều khiển sử dụng kết nối **TCP Persistent** với �
 
 ## 3. DATA PLANE BINARY PACKET FORMAT (UDP — PORT 9002)
 
-Tất cả các gói tin trên mặt phẳng dữ liệu đều tuân thủ cấu trúc Header cố định **22 bytes** theo chuẩn thứ tự byte mạng (**Big-Endian / Network Byte Order**, format `!HBBIIIIHH`).
+Tất cả các gói tin trên mặt phẳng dữ liệu đều tuân thủ cấu trúc Header cố định **24 bytes** theo chuẩn thứ tự byte mạng (**Big-Endian / Network Byte Order**, format `!HBBIIIIHH`).
 
 ### 3.1 Binary Header Layout
 
