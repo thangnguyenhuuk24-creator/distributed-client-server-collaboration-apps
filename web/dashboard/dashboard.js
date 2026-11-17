@@ -138,9 +138,14 @@ async function refreshDashboard() {
         if (!response.ok) throw new Error(`Dashboard API returned ${response.status}`);
         const data = await response.json();
         const metrics = data.metrics;
+        const serverName = data.server_name || "Unnamed server";
+        $("server-name-display").textContent = serverName;
+        $("server-name-heading").textContent = serverName;
+        document.title = `${serverName} · Server dashboard`;
+        $("server-name-modal").hidden = data.server_configured !== false;
         $("server-status").textContent = data.status.toUpperCase();
         $("server-status").previousElementSibling.classList.toggle("offline", data.status !== "online");
-        $("server-toggle").textContent = data.status === "online" ? "Stop server" : "Start server";
+        $("server-toggle").textContent = data.status === "online" ? "Stop server" : "Reconnect";
         $("server-toggle").disabled = false;
         $("last-updated").textContent = new Date(data.updated_at * 1000).toLocaleTimeString();
         $("uptime").textContent = formatDuration(data.uptime_seconds);
@@ -148,6 +153,8 @@ async function refreshDashboard() {
         $("successful-logins").textContent = metrics.successful_logins.toLocaleString();
         $("chat-relays").textContent = metrics.chat_relays.toLocaleString();
         $("file-relays").textContent = metrics.file_relays.toLocaleString();
+        $("offline-events-recovered").textContent =
+            (metrics.offline_chat_recovered + metrics.offline_file_recovered).toLocaleString();
         const recentChatRelays = getRecentChatRelays(data.events);
         const recentGlobalRelays = recentChatRelays.filter((event) => event.stream_id === 0).length;
         const recentPrivateRelays = recentChatRelays.length - recentGlobalRelays;
@@ -193,6 +200,35 @@ $("server-toggle").addEventListener("click", async () => {
     if (online && !window.confirm("Stop the server and disconnect all clients?")) return;
     $("server-toggle").disabled = true;
     await runAction(online ? "/api/server/stop" : "/api/server/start");
+});
+
+$("server-name-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const input = $("server-name-input");
+    const error = $("server-name-error");
+    const button = $("server-name-form").querySelector("button");
+    const serverName = input.value.trim();
+    if (!serverName || serverName.length > 64) {
+        error.textContent = "Enter a server name of 1-64 characters.";
+        return;
+    }
+
+    button.disabled = true;
+    error.textContent = "";
+    try {
+        const response = await fetch("/api/server/name", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ server_name: serverName }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        await refreshDashboard();
+    } catch (error) {
+        $("server-name-error").textContent = error.message;
+    } finally {
+        button.disabled = false;
+    }
 });
 
 refreshDashboard();

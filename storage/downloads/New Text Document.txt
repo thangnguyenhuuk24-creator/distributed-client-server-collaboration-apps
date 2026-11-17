@@ -1,0 +1,2 @@
+python main.py --udp-port 9000 --discovery-port 9002 --web-port 8080
+python main.py --udp-port 9001 --discovery-port 9002 --web-port 8081

@@ -15,10 +15,12 @@ class CentralDashboardServer:
         central_server: CentralServer,
         host: str = "127.0.0.1",
         port: int = 9003,
+        config_directory: str = "storage/servers",
     ):
         self.central_server = central_server
         self.host = host
         self.port = port
+        self.config_directory = os.path.abspath(config_directory)
         self.httpd: Optional[http.server.ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
 
@@ -81,6 +83,37 @@ class CentralDashboardServer:
                     central_server.stop()
                     self._send_json(200, {"success": True})
                     return
+                if self.path == "/api/server/name":
+                    try:
+                        length = int(self.headers.get("Content-Length", "0"))
+                    except ValueError:
+                        self._send_json(400, {"error": "Invalid request body"})
+                        return
+                    if not 0 < length <= 4096:
+                        self._send_json(400, {"error": "Invalid request body"})
+                        return
+                    try:
+                        data = json.loads(self.rfile.read(length).decode("utf-8"))
+                        if not isinstance(data, dict):
+                            raise ValueError("Body must be a JSON object")
+                        server_name = data.get("server_name")
+                        if not isinstance(server_name, str):
+                            raise ValueError("Server name must be a string")
+                        central_server.configure_identity(
+                            server_name,
+                            config_directory,
+                        )
+                    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+                        self._send_json(400, {"error": str(exc)})
+                        return
+                    except (OSError, RuntimeError) as exc:
+                        self._send_json(409, {"error": str(exc)})
+                        return
+                    self._send_json(200, {
+                        "success": True,
+                        "server_name": central_server.server_name,
+                    })
+                    return
                 if self.path == "/api/logs/clear":
                     central_server.clear_events()
                     self._send_json(200, {"success": True})
@@ -141,6 +174,7 @@ class CentralDashboardServer:
                 return
 
         central_server = self.central_server
+        config_directory = self.config_directory
         self.httpd = http.server.ThreadingHTTPServer(
             (self.host, self.port),
             RequestHandler,

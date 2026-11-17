@@ -18,7 +18,7 @@ class DiscoveryService:
         self,
         state: ClientState,
         socket_send_func,
-        broadcast_port: int = 9002,
+        broadcast_port: int = 9004,
         local_port: int = 9000,
     ):
         self.state = state

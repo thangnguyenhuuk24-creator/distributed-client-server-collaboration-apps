@@ -1,5 +1,4 @@
 import os
-import base64
 from typing import Optional
 
 # Thử import thư viện cryptography. Nếu thiếu, mặc định BÁO LỖI để không âm thầm
@@ -64,6 +63,56 @@ class CryptoEngine:
             full_key = salt + self.key
             cipher_bytes = bytes([b ^ full_key[i % len(full_key)] for i, b in enumerate(plain_bytes)])
             return b"XOR:" + salt + cipher_bytes
+
+    def encrypt_file(
+        self,
+        source_path: str,
+        destination_path: str,
+        chunk_size: int = 1024 * 1024,
+    ) -> tuple[int, int]:
+        filesize = os.path.getsize(source_path)
+        if not filesize:
+            with open(destination_path, "wb"):
+                pass
+            return 0, 0
+
+        with open(source_path, "rb") as source, open(destination_path, "wb") as destination:
+            if HAS_CRYPTOGRAPHY:
+                iv = os.urandom(16)
+                cipher = Cipher(
+                    algorithms.AES(self.key),
+                    modes.CBC(iv),
+                    backend=default_backend(),
+                )
+                encryptor = cipher.encryptor()
+                padder = padding.PKCS7(128).padder()
+                destination.write(iv)
+                while True:
+                    chunk = source.read(chunk_size)
+                    if not chunk:
+                        break
+                    padded = padder.update(chunk)
+                    if padded:
+                        destination.write(encryptor.update(padded))
+                destination.write(
+                    encryptor.update(padder.finalize()) + encryptor.finalize()
+                )
+            else:
+                salt = os.urandom(4)
+                full_key = salt + self.key
+                destination.write(b"XOR:" + salt)
+                offset = 0
+                while True:
+                    chunk = source.read(chunk_size)
+                    if not chunk:
+                        break
+                    destination.write(bytes(
+                        value ^ full_key[(offset + index) % len(full_key)]
+                        for index, value in enumerate(chunk)
+                    ))
+                    offset += len(chunk)
+
+        return filesize, os.path.getsize(destination_path)
 
     def decrypt(self, cipher_bytes: bytes) -> bytes:
         """Giải mã mảng byte Payload nhận được từ Packet sang dữ liệu gốc."""

@@ -9,16 +9,61 @@ document.addEventListener("DOMContentLoaded", () => {
     let forceScrollBottom = true;
     let lastPeersKey = "";
     let polling = false;
+    let pollingTimer = null;
+    let downloadInProgress = new Set();
+    let serverChoices = [];
+    let serverListLoaded = false;
+
+    fetch("/api/servers", { cache: "no-store" })
+        .then(async (response) => {
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+            if (!Array.isArray(result.servers)) {
+                throw new Error("Danh sách server không hợp lệ");
+            }
+            serverChoices = result.servers;
+            serverListLoaded = true;
+            serverSelect.replaceChildren();
+            if (serverChoices.length === 0) {
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = "Chưa có server được cấu hình";
+                serverSelect.appendChild(option);
+                serverSelect.disabled = true;
+                loginBtn.disabled = true;
+                return;
+            }
+            serverSelect.disabled = false;
+            serverChoices.forEach((server) => {
+                const option = document.createElement("option");
+                option.value = server.id;
+                option.textContent = server.label || server.name;
+                serverSelect.appendChild(option);
+            });
+            serverSelect.value = result.selected_id || "";
+            loginBtn.disabled = false;
+        })
+        .catch((error) => {
+            console.error("Không lấy được cấu hình server:", error);
+            serverSelect.innerHTML = '<option value="">Không tải được server</option>';
+            loginBtn.disabled = false;
+        });
 
     // DOM Elements
     const loginModal = document.getElementById("login-modal");
+    const serverSelect = document.getElementById("server-select");
     const usernameInput = document.getElementById("username-input");
+    const passwordInput = document.getElementById("password-input");
     const loginBtn = document.getElementById("login-btn");
+    loginBtn.disabled = true;
+    const logoutBtn = document.getElementById("logout-btn");
     
     const displayUser = document.getElementById("display-user");
     const displaySession = document.getElementById("display-session");
     const peerList = document.getElementById("peer-list");
     const peerCount = document.getElementById("peer-count");
+    const offlinePeerList = document.getElementById("offline-peer-list");
+    const offlinePeerCount = document.getElementById("offline-peer-count");
     
     const messagesContainer = document.getElementById("messages-container");
     const messageInput = document.getElementById("message-input");
@@ -38,29 +83,84 @@ document.addEventListener("DOMContentLoaded", () => {
     usernameInput.addEventListener("keypress", (e) => {
         if (e.key === "Enter") performLogin();
     });
+    passwordInput.addEventListener("keypress", (e) => {
+        if (e.key === "Enter") performLogin();
+    });
+    logoutBtn.addEventListener("click", performLogout);
 
     async function performLogin() {
         const username = usernameInput.value.trim();
-        if (!username) return alert("Vui lòng nhập tên tài khoản!");
+        const password = passwordInput.value;
+        if (!username || !password) return alert("Vui lòng nhập username và mật khẩu.");
+        if (!serverListLoaded) return alert("Không tải được danh sách server. Vui lòng tải lại trang.");
+        const selectedServer = serverChoices.find(
+            (server) => server.id === serverSelect.value
+        );
+        if (!selectedServer) return alert("Vui lòng chọn server.");
 
         try {
             const res = await fetch("/api/login", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: jsonStringify({ username }),
+                body: jsonStringify({
+                    username,
+                    password,
+                    server_name: selectedServer.name,
+                    server_host: selectedServer.host,
+                    tcp_port: selectedServer.tcp_port,
+                    relay_port: selectedServer.relay_port,
+                }),
             });
             const data = await res.json();
-            if (data.success) {
+            if (res.ok && data.success) {
+                if (data.server_name) {
+                    selectedServer.name = data.server_name;
+                    serverSelect.options[serverSelect.selectedIndex].textContent =
+                        data.server_name;
+                }
                 isLoggedIn = true;
                 loginModal.style.display = "none";
+                logoutBtn.hidden = false;
                 displayUser.textContent = username;
                 displaySession.textContent = `Session: ${data.session_id}`;
+                if (data.mailbox_sync_error) {
+                    alert(`Đăng nhập thành công nhưng chưa đồng bộ được tin nhắn offline: ${data.mailbox_sync_error}`);
+                }
+                lastRenderKey = "";
+                lastPeersKey = "";
                 startPolling();
             } else {
                 alert(data.error || "Đăng nhập thất bại");
             }
         } catch (err) {
             console.error("Lỗi đăng nhập:", err);
+        }
+    }
+
+    async function performLogout() {
+        try {
+            const response = await fetch("/api/logout", { method: "POST" });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            isLoggedIn = false;
+            if (pollingTimer) {
+                clearInterval(pollingTimer);
+                pollingTimer = null;
+            }
+            logoutBtn.hidden = true;
+            loginModal.style.display = "flex";
+            displayUser.textContent = "Chưa kết nối";
+            displaySession.textContent = "Session: --";
+            peerList.innerHTML = "";
+            offlinePeerList.innerHTML = "";
+            messagesContainer.innerHTML = "";
+            fileTransfers.clear();
+            renderTransfers();
+            selectedPeer = null;
+            currentStreamId = 0;
+            lastRenderKey = "";
+            lastPeersKey = "";
+        } catch (error) {
+            alert(`Không thể đăng xuất: ${error.message}`);
         }
     }
 
@@ -94,7 +194,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const recipient = currentStreamId === 0 ? null : selectedPeer;
         if (currentStreamId !== 0 && !recipient) {
-            alert("Hãy chọn người nhận trong danh sách người dùng online trước.");
+            alert("Hãy chọn người nhận trong danh sách người dùng online hoặc offline.");
             return;
         }
         const payload = {
@@ -102,6 +202,7 @@ document.addEventListener("DOMContentLoaded", () => {
             content: content,
             recipient_ip: recipient ? recipient.ip : "",
             recipient_port: recipient ? recipient.port : 0,
+            recipient_username: recipient ? recipient.username : "",
         };
 
         try {
@@ -127,7 +228,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const file = fileInput.files[0];
         if (!file) return alert("Hãy chọn file cần gửi.");
         if (currentStreamId !== 0 && !selectedPeer) {
-            return alert("Vui lòng chọn người nhận từ danh sách online.");
+            return alert("Vui lòng chọn người nhận từ danh sách online hoặc offline.");
         }
 
         try {
@@ -137,6 +238,7 @@ document.addEventListener("DOMContentLoaded", () => {
             if (currentStreamId !== 0) {
                 query.set("recipient_ip", selectedPeer.ip);
                 query.set("recipient_port", selectedPeer.port);
+                query.set("recipient_username", selectedPeer.username);
             }
             activeUpload = { filename: file.name, progress: 0 };
             sendFileBtn.disabled = true;
@@ -204,7 +306,9 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         };
         poll();
-        setInterval(poll, 500); // Refresh transfer progress twice per second.
+        if (!pollingTimer) {
+            pollingTimer = setInterval(poll, 500);
+        }
     }
 
     async function fetchFileTransfers() {
@@ -280,17 +384,15 @@ document.addEventListener("DOMContentLoaded", () => {
         try {
             const res = await fetch("/api/peers");
             const peers = await res.json();
-            if (!Array.isArray(peers)) throw new Error("Danh sách peer không hợp lệ");
+            if (!Array.isArray(peers)) throw new Error("Danh sách người dùng không hợp lệ");
             if (selectedPeer) {
                 const previousStreamId = selectedPeer.private_stream_id;
                 selectedPeer = peers.find(
-                    p => p.ip === selectedPeer.ip && p.port === selectedPeer.port
+                    p => p.username.toLowerCase() === selectedPeer.username.toLowerCase()
                 ) || null;
                 if (currentStreamId !== 0 && selectedPeer) {
                     currentStreamId = selectedPeer.private_stream_id;
-                    if (previousStreamId !== currentStreamId) {
-                        updateActiveChatTitle();
-                    }
+                    if (previousStreamId !== currentStreamId) updateActiveChatTitle();
                 } else if (currentStreamId !== 0) {
                     currentStreamId = 1;
                     updateActiveChatTitle();
@@ -302,27 +404,43 @@ document.addEventListener("DOMContentLoaded", () => {
             ]);
             if (peersKey === lastPeersKey) return;
             lastPeersKey = peersKey;
-            peerCount.textContent = peers.length;
+            const onlinePeers = peers.filter((peer) => peer.online !== false);
+            const offlinePeers = peers.filter((peer) => peer.online === false);
+            peerCount.textContent = onlinePeers.length;
+            offlinePeerCount.textContent = offlinePeers.length;
 
-            peerList.innerHTML = "";
-            peers.forEach((p) => {
-                const li = document.createElement("li");
-                li.className = `peer-item ${selectedPeer && selectedPeer.ip === p.ip && selectedPeer.port === p.port ? "active" : ""}`;
-                li.innerHTML = `
-                    <div class="peer-info">
-                        <strong>${escapeHTML(p.username)}</strong>
-                        <span class="peer-endpoint">${p.ip}:${p.port}</span>
-                    </div>
-                `;
-                li.addEventListener("click", () => {
-                    selectedPeer = p;
-                    forceScrollBottom = true;
-                    updateActiveChatTitle();
-                    fetchPeers();
-                    if (currentStreamId !== 0) fetchMessages();
+            function renderPeerItems(targetList, items, isOffline) {
+                targetList.innerHTML = "";
+                items.forEach((p) => {
+                    const li = document.createElement("li");
+                    li.className = `peer-item ${selectedPeer && selectedPeer.username.toLowerCase() === p.username.toLowerCase() ? "active" : ""}`;
+                    li.innerHTML = `
+                        <div class="peer-info">
+                            <strong>${escapeHTML(p.username)}</strong>
+                            <span class="${isOffline ? "peer-status" : "peer-endpoint"}">${isOffline ? "Offline" : `${escapeHTML(p.ip)}:${p.port}`}</span>
+                        </div>
+                    `;
+                    li.addEventListener("click", () => {
+                        selectedPeer = p;
+                        if (isOffline) {
+                            currentStreamId = p.private_stream_id;
+                            streamTabs.forEach((tab) => {
+                                tab.classList.toggle("active", tab.dataset.stream === "1");
+                            });
+                            activeStreamBadge.textContent = "Kênh riêng";
+                        } else if (currentStreamId !== 0) {
+                            currentStreamId = p.private_stream_id;
+                        }
+                        forceScrollBottom = true;
+                        updateActiveChatTitle();
+                        fetchPeers();
+                        if (currentStreamId !== 0) fetchMessages();
+                    });
+                    targetList.appendChild(li);
                 });
-                peerList.appendChild(li);
-            });
+            }
+            renderPeerItems(peerList, onlinePeers, false);
+            renderPeerItems(offlinePeerList, offlinePeers, true);
         } catch (err) {
             console.error("Lỗi lấy peers:", err);
         }
@@ -331,7 +449,13 @@ document.addEventListener("DOMContentLoaded", () => {
     async function fetchMessages() {
         try {
             const requestedStreamId = currentStreamId;
-            const res = await fetch(`/api/messages?stream_id=${requestedStreamId}`);
+            if (requestedStreamId !== 0 && !selectedPeer) return;
+            const peerQuery = requestedStreamId !== 0
+                ? `&peer_username=${encodeURIComponent(selectedPeer.username)}`
+                : "";
+            const res = await fetch(
+                `/api/messages?stream_id=${requestedStreamId}${peerQuery}`
+            );
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
             if (requestedStreamId !== currentStreamId) return;
@@ -379,9 +503,16 @@ document.addEventListener("DOMContentLoaded", () => {
                         ERROR: "Gửi thất bại",
                     }[transfer.status] || msg.status || "Đang truyền")
                     : (msg.status || "Đang truyền");
-                const body = msg.type === "file"
+                const body = msg.type === "file" && (msg.expired || msg.status === "Hết hạn")
                     ? `<div class="file-message">
                            <strong>${escapeHTML(msg.filename)}</strong>
+                           <span>${formatBytes(msg.filesize)}</span>
+                           <span class="file-transfer-status">File đã hết hạn</span>
+                       </div>`
+                    : msg.type === "file"
+                    ? `<div class="file-message">
+                           <strong>${escapeHTML(msg.filename)}</strong>
+                           <span>${formatBytes(msg.filesize)}</span>
                            <span class="file-transfer-status">${escapeHTML(transferStatus)}</span>
                            <div class="file-transfer-progress">
                                <div class="progress-bar-bg"
@@ -396,6 +527,9 @@ document.addEventListener("DOMContentLoaded", () => {
                                    ? `${receivedChunks}/${totalChunks} phần · ${progress}%`
                                    : "Đang chờ cập nhật tiến độ"}</span>
                            </div>
+                           ${msg.status === "Chờ nhận"
+                               ? `<button class="btn secondary-btn offline-file-download" data-mail-id="${escapeHTML(msg.file_id)}">Tải file (còn tối đa 1 phút)</button>`
+                               : ""}
                            ${msg.status === "Đã nhận"
                                ? `<a href="/api/downloads/${encodeURIComponent(msg.download_filename || msg.filename)}" download> Tải xuống</a>`
                                : ""}
@@ -406,6 +540,28 @@ document.addEventListener("DOMContentLoaded", () => {
                     ${body}
                 `;
                 messagesContainer.appendChild(div);
+                const offlineDownload = div.querySelector(".offline-file-download");
+                if (offlineDownload) {
+                    offlineDownload.addEventListener("click", async () => {
+                        const mailId = offlineDownload.dataset.mailId;
+                        if (downloadInProgress.has(mailId)) return;
+                        downloadInProgress.add(mailId);
+                        offlineDownload.disabled = true;
+                        try {
+                            const response = await fetch(
+                                `/api/offline-files/${encodeURIComponent(mailId)}`
+                            );
+                            const result = await response.json();
+                            if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+                            await fetchMessages();
+                        } catch (error) {
+                            alert(`Không tải được file offline: ${error.message}`);
+                            await fetchMessages();
+                        } finally {
+                            downloadInProgress.delete(mailId);
+                        }
+                    });
+                }
             });
             if (forceScrollBottom || wasNearBottom) {
                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
@@ -431,6 +587,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function jsonStringify(obj) {
         return JSON.stringify(obj);
+    }
+
+    function formatBytes(value) {
+        const size = Math.max(0, Number(value) || 0);
+        if (size < 1024) return `${size} B`;
+        if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+        if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+        return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
     }
 
     function escapeHTML(str) {

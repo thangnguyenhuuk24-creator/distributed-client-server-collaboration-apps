@@ -30,8 +30,8 @@ def parse_arguments():
     parser.add_argument(
         "--discovery-port",
         type=int,
-        default=9002,
-        help="Cổng UDP discovery dùng chung cho các client (mặc định: 9002)",
+        default=9004,
+        help="Cổng UDP discovery dùng chung cho các client (mặc định: 9004, tách khỏi relay 9002)",
     )
     parser.add_argument(
         "--host",
@@ -63,6 +63,12 @@ def parse_arguments():
         help="Cổng dashboard quản trị local-only (mặc định: 9003)",
     )
     parser.add_argument(
+        "--server-name",
+        type=str,
+        default="",
+        help="Server display name and account namespace",
+    )
+    parser.add_argument(
         "--server-host",
         type=str,
         help="Địa chỉ IP/hostname server LAN; bật chế độ client trung tâm khi được cung cấp",
@@ -74,23 +80,50 @@ def main():
     args = parse_arguments()
 
     if args.server:
+        server_name = args.server_name.strip()
+        database_dir = os.path.abspath(os.path.join("storage", "servers"))
+        os.makedirs(database_dir, exist_ok=True)
+        if not server_name:
+            server_name = CentralServer.load_saved_name(
+                args.tcp_port,
+                args.relay_port,
+                database_dir,
+            )
+        auth_db_path = (
+            CentralServer.auth_database_path(
+                server_name,
+                args.tcp_port,
+                args.relay_port,
+                database_dir,
+            )
+            if server_name and not args.server_name.strip()
+            else None
+        )
         central_server = CentralServer(
             host=args.host,
             tcp_port=args.tcp_port,
             relay_port=args.relay_port,
+            server_name=server_name,
+            auth_db_path=auth_db_path,
+            require_auth=True,
         )
+        if args.server_name.strip():
+            central_server.configure_identity(server_name, database_dir)
         dashboard = CentralDashboardServer(
             central_server,
             host="127.0.0.1",
             port=args.dashboard_port,
+            config_directory=database_dir,
         )
         try:
             central_server.start()
             dashboard.start()
-            print("[+] Central LAN server đang chạy")
+            print("[+] Central LAN server đã khởi chạy")
             print(f"    TCP login/presence: {args.host}:{central_server.tcp_port}")
             print(f"    UDP chat relay    : {args.host}:{central_server.relay_port}")
             print(f"    Dashboard local  : http://127.0.0.1:{dashboard.port}")
+            if not central_server.get_dashboard_snapshot()["server_configured"]:
+                print("    Hãy mở dashboard để nhập tên server sau khi khởi tạo.")
             print("[!] Nhấn Ctrl+C để dừng server.")
             while True:
                 time.sleep(1)
@@ -130,6 +163,7 @@ def main():
         server_host=args.server_host,
         server_tcp_port=args.tcp_port,
         server_udp_port=args.relay_port,
+        server_name=args.server_name,
     )
 
     # 3. Khởi tạo Web Server (Tầng giao diện HTTP của Member 2)

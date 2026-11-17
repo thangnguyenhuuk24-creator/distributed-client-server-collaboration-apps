@@ -1,10 +1,12 @@
 import base64
 import json
 import os
+import secrets
 import socket
 import sys
 import threading
 import time
+import uuid
 from typing import Callable, Dict, Optional, Tuple
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -35,10 +37,11 @@ class SocketEngine:
         state: ClientState,
         host: str = "0.0.0.0",
         port: int = 9000,
-        discovery_port: int = 9002,
+        discovery_port: int = 9004,
         server_host: Optional[str] = None,
         server_tcp_port: int = 9001,
         server_udp_port: int = 9002,
+        server_name: str = "",
     ):
         self.state = state
         self.host = host
@@ -46,8 +49,27 @@ class SocketEngine:
         self.server_host = server_host
         self.server_tcp_port = server_tcp_port
         self.server_udp_port = server_udp_port
+        self.server_name = server_name
+        self._mode_lock = threading.RLock()
+        self._central_active = bool(server_host)
+        self._central_fallback = False
+        self._fallback_allowed_session_ids = set()
+        self._active_username = ""
+        self._active_password = None
+        self._active_session_id = 0
+        self._logged_in = False
+        self._reconnect_stop = threading.Event()
+        self._reconnect_thread = None
         self.coordinator = (
-            CentralClientConnection(state, server_host, server_tcp_port, port)
+            CentralClientConnection(
+                state,
+                server_host,
+                server_tcp_port,
+                port,
+                on_disconnect=self._handle_central_disconnect,
+                server_name=server_name,
+                on_mailbox_event=self._handle_mailbox_event,
+            )
             if server_host
             else None
         )
@@ -79,6 +101,11 @@ class SocketEngine:
         self.recv_thread: Optional[threading.Thread] = None
         self.timer_thread: Optional[threading.Thread] = None
 
+    @property
+    def using_central_server(self) -> bool:
+        with self._mode_lock:
+            return self._central_active
+
     def start(self):
         self.sock.bind((self.host, self.port))
         self.running = True
@@ -87,7 +114,7 @@ class SocketEngine:
             self.recv_thread.start()
             self.timer_thread = threading.Thread(target=self._retransmit_loop, daemon=True)
             self.timer_thread.start()
-            if not self.coordinator:
+            if not self.using_central_server:
                 self.discovery.start()
         except OSError:
             self.running = False
@@ -97,6 +124,8 @@ class SocketEngine:
 
     def stop(self):
         self.running = False
+        self._logged_in = False
+        self._reconnect_stop.set()
         self.discovery.stop()
         if self.coordinator:
             self.coordinator.close()
@@ -139,10 +168,405 @@ class SocketEngine:
                 self._incoming_receivers[key] = StreamReceiver(stream_id)
             return self._incoming_receivers[key]
 
-    def login(self, username: str) -> int:
-        if not self.coordinator:
-            raise RuntimeError("Central server mode is not configured")
-        return self.coordinator.login(username)
+    def configure_central_server(
+        self,
+        server_host: str,
+        server_tcp_port: int,
+        server_udp_port: int,
+        server_name: str = "",
+    ):
+        if not server_host or not 1 <= server_tcp_port <= 65535 or not 1 <= server_udp_port <= 65535:
+            raise ValueError("Invalid central server address or port")
+        if self.coordinator:
+            self.coordinator.close()
+        self._logged_in = False
+        self._reconnect_stop.set()
+        self.server_host = server_host
+        self.server_tcp_port = server_tcp_port
+        self.server_udp_port = server_udp_port
+        self.server_name = server_name
+        self._relay_endpoint = (socket.gethostbyname(server_host), server_udp_port)
+        self.coordinator = CentralClientConnection(
+            self.state,
+            server_host,
+            server_tcp_port,
+            self.port,
+            on_disconnect=self._handle_central_disconnect,
+            server_name=server_name,
+            on_mailbox_event=self._handle_mailbox_event,
+        )
+        with self._mode_lock:
+            self._central_active = True
+            self._central_fallback = False
+            self._fallback_allowed_session_ids.clear()
+        self.discovery.stop()
+
+    def configure_p2p(self):
+        if self._logged_in:
+            raise RuntimeError("Cannot change network mode while logged in")
+        with self._mode_lock:
+            self._central_active = False
+            self._central_fallback = False
+            self._fallback_allowed_session_ids.clear()
+            self._reconnect_stop.set()
+            coordinator = self.coordinator
+            self.coordinator = None
+            self.server_host = None
+            self.server_name = ""
+            self._relay_endpoint = None
+        if coordinator:
+            coordinator.close()
+        if not self.discovery.running:
+            self.discovery.start()
+
+    def login(self, username: str, password: Optional[str] = None) -> int:
+        if self.using_central_server:
+            if not self.coordinator:
+                raise RuntimeError("Central server must be selected before login")
+            self._active_username = username
+            self._active_password = password
+            self._logged_in = True
+            self._reconnect_stop.clear()
+            try:
+                session_id = self.coordinator.login(username, password)
+            except Exception:
+                self._logged_in = False
+                self._active_username = ""
+                self._active_password = None
+                raise
+            self.server_name = self.coordinator.server_name
+            self._active_session_id = session_id
+            self._sync_offline_history(self.coordinator)
+            return session_id
+        session_id = self._login_p2p(username)
+        self._active_username = username
+        self._active_session_id = session_id
+        self._logged_in = True
+        return session_id
+
+    def logout(self):
+        self._logged_in = False
+        self._active_username = ""
+        self._active_password = None
+        self._active_session_id = 0
+        self._reconnect_stop.set()
+        if self.coordinator:
+            self.coordinator.close()
+            self.coordinator = None
+        self.state.clear_session_data()
+
+    def _login_p2p(self, username: str) -> int:
+        session_id = secrets.randbelow(0xFFFFFFFF) + 1
+        self.state.set_online(username, session_id)
+        self.discovery.send_broadcast_announce()
+        return session_id
+
+    def _handle_central_disconnect(self):
+        if not self.using_central_server or not self._logged_in:
+            return
+        print("[!] Central server connection lost; switching to direct P2P.")
+        self._activate_p2p()
+        self._start_reconnect_worker()
+
+    def request_user_directory(self):
+        if not self.using_central_server or not self.coordinator:
+            return []
+        return self.coordinator.request_user_directory()
+
+    def sync_offline_mailbox(self):
+        if not self.using_central_server or not self.coordinator:
+            return
+        offset = 0
+        while True:
+            messages, total = self.coordinator.get_offline_messages(offset)
+            for message in messages:
+                self._handle_mailbox_event(message)
+            offset += len(messages)
+            if not messages or offset >= total:
+                return
+
+    def queue_offline_message(
+        self,
+        recipients,
+        text,
+        event_id,
+        timestamp,
+        event_order,
+    ):
+        if not self.using_central_server or not self.coordinator:
+            raise ConnectionError("Central server is unavailable")
+        payload = b"\x00CHAT1" + json.dumps(
+            {
+                "text": text,
+                "event_id": event_id,
+                "timestamp": timestamp,
+                "event_order": event_order,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        encrypted = base64.b64encode(self.crypto.encrypt(payload)).decode("ascii")
+        return self.coordinator.send_offline_message({
+            "recipients": [
+                {
+                    "username": recipient["username"],
+                    "stream_id": recipient["stream_id"],
+                }
+                for recipient in recipients
+            ],
+            "event_id": event_id,
+            "timestamp": timestamp,
+            "event_order": event_order,
+            "content": encrypted,
+        })
+
+    def queue_offline_file(
+        self,
+        filepath,
+        filename,
+        recipients,
+        checksum,
+        event_id,
+        timestamp,
+        event_order,
+    ):
+        if not self.using_central_server or not self.coordinator:
+            raise ConnectionError("Central server is unavailable")
+        encrypted_path = f"{filepath}.{uuid.uuid4().hex}.encrypted"
+        filesize, encrypted_size = self.crypto.encrypt_file(
+            filepath,
+            encrypted_path,
+        )
+        try:
+            self.coordinator.send_offline_file(
+                uuid.uuid4().hex,
+                filename,
+                encrypted_path,
+                filesize,
+                encrypted_size,
+                checksum,
+                recipients,
+                event_id,
+                timestamp,
+                event_order,
+            )
+        finally:
+            try:
+                os.remove(encrypted_path)
+            except OSError as exc:
+                print(f"[!] Could not remove temporary encrypted file: {exc}")
+
+    def download_offline_file(self, mail_id, filesize):
+        if not self.using_central_server or not self.coordinator:
+            raise ConnectionError("Central server is unavailable")
+        encrypted = self.coordinator.download_offline_file(mail_id, filesize)
+        return self.crypto.decrypt(encrypted)
+
+    def _handle_mailbox_event(self, message):
+        try:
+            sender = message["sender"]
+            event_id = message["event_id"]
+            timestamp = message["timestamp"]
+            event_order = message["event_order"]
+            stream_id = message["stream_id"]
+            if (
+                not isinstance(sender, str)
+                or not isinstance(event_id, str)
+                or isinstance(timestamp, bool)
+                or not isinstance(timestamp, (int, float))
+                or isinstance(event_order, bool)
+                or not isinstance(event_order, int)
+                or isinstance(stream_id, bool)
+                or not isinstance(stream_id, int)
+            ):
+                raise ValueError("Invalid offline mailbox event")
+            if message.get("message_type") == "chat":
+                encrypted = base64.b64decode(message["content"], validate=True)
+                plaintext = self.crypto.decrypt(encrypted)
+                if not plaintext.startswith(b"\x00CHAT1"):
+                    raise ValueError("Invalid offline message payload")
+                event = json.loads(plaintext[len(b"\x00CHAT1"):].decode("utf-8"))
+                if (
+                    not isinstance(event, dict)
+                    or not isinstance(event.get("text"), str)
+                    or event.get("event_id") != event_id
+                    or event.get("timestamp") != timestamp
+                    or event.get("event_order") != event_order
+                ):
+                    raise ValueError("Invalid offline chat event metadata")
+                self.state.add_message(
+                    stream_id,
+                    sender,
+                    event["text"],
+                    conversation_key=sender if stream_id != 0 else None,
+                    event_id=event_id,
+                    timestamp=timestamp,
+                    event_order=event_order,
+                    server_synced=True,
+                )
+                return
+            if message.get("message_type") == "file":
+                filename = message["filename"]
+                filesize = message["filesize"]
+                checksum = message.get("sha256")
+                if (
+                    not isinstance(filename, str)
+                    or not filename
+                    or os.path.basename(filename.replace("\\", "/")) != filename
+                    or isinstance(filesize, bool)
+                    or not isinstance(filesize, int)
+                    or not 0 <= filesize <= 200 * 1024 * 1024
+                    or not isinstance(checksum, str)
+                    or len(checksum) != 64
+                    or any(character not in "0123456789abcdef" for character in checksum)
+                    or (
+                        message.get("expires_at") is not None
+                        and (
+                            isinstance(message.get("expires_at"), bool)
+                            or not isinstance(message.get("expires_at"), (int, float))
+                        )
+                    )
+                ):
+                    raise ValueError("Invalid offline file metadata")
+                status = "Chờ nhận" if message.get("file_available") else "Hết hạn"
+                self.state.add_file_message(
+                    stream_id,
+                    sender,
+                    filename,
+                    message["mail_id"],
+                    status,
+                    filesize,
+                    sender if stream_id != 0 else None,
+                    event_id=event_id,
+                    timestamp=timestamp,
+                    event_order=event_order,
+                    server_synced=True,
+                    sha256=checksum,
+                    file_expires_at=message.get("expires_at"),
+                )
+                if not message.get("file_available"):
+                    with self.state._lock:
+                        for item in self.state.streams.get(stream_id, []):
+                            if item.get("file_id") == message["mail_id"]:
+                                item["expired"] = True
+                                self.state._persist_message(stream_id, item)
+                return
+            raise ValueError("Unsupported offline mailbox event type")
+        except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            print(f"[!] Could not apply offline mailbox event: {exc}")
+
+    def _start_reconnect_worker(self):
+        with self._mode_lock:
+            if self._reconnect_thread and self._reconnect_thread.is_alive():
+                return
+            self._reconnect_thread = threading.Thread(
+                target=self._reconnect_loop,
+                daemon=True,
+            )
+            self._reconnect_thread.start()
+
+    def _release_reconnect_worker(self):
+        with self._mode_lock:
+            if self._reconnect_thread is threading.current_thread():
+                self._reconnect_thread = None
+
+    def _reconnect_loop(self):
+        while self.running and self._logged_in and not self._reconnect_stop.wait(2.0):
+            connection = CentralClientConnection(
+                self.state,
+                self.server_host,
+                self.server_tcp_port,
+                self.port,
+                on_disconnect=self._handle_central_disconnect,
+                server_name=self.server_name,
+                resume_session_id=self._active_session_id or None,
+                on_mailbox_event=self._handle_mailbox_event,
+            )
+            try:
+                previous = self.coordinator
+                self.coordinator = connection
+                if previous:
+                    previous.close()
+                session_id = connection.login(
+                    self._active_username,
+                    self._active_password,
+                )
+                if not self._logged_in or self._reconnect_stop.is_set():
+                    connection.close()
+                    self._release_reconnect_worker()
+                    return
+                self._active_session_id = session_id
+                with self._mode_lock:
+                    self._central_active = True
+                    self._central_fallback = False
+                    self._fallback_allowed_session_ids.clear()
+                self.discovery.stop()
+                self._sync_offline_history(connection)
+                self.sync_offline_mailbox()
+                if not self.using_central_server:
+                    connection.close()
+                    if self.coordinator is connection:
+                        self.coordinator = None
+                    continue
+                print("[+] Reconnected to the central server.")
+                self._release_reconnect_worker()
+                return
+            except PermissionError as exc:
+                connection.close()
+                if self.coordinator is connection:
+                    self.coordinator = None
+                print(f"[!] Central server rejected reconnection: {exc}")
+                self._release_reconnect_worker()
+                return
+            except (OSError, ConnectionError, TimeoutError, ValueError) as exc:
+                connection.close()
+                if self.coordinator is connection:
+                    self.coordinator = None
+                if self._logged_in and not self._reconnect_stop.is_set():
+                    print(f"[!] Central server is still unavailable: {exc}")
+
+    @staticmethod
+    def _sync_offline_history(connection):
+        try:
+            connection.sync_offline_history()
+        except (ConnectionError, TimeoutError, OSError, ValueError) as exc:
+            print(f"[!] Could not sync offline history with the central server: {exc}")
+
+    def _activate_p2p(self):
+        with self._mode_lock:
+            if not self._central_active:
+                return
+            self._central_active = False
+            with self.state._lock:
+                self._fallback_allowed_session_ids = {
+                    peer["session_id"]
+                    for peer in self.state.peers.values()
+                    if isinstance(peer.get("session_id"), int)
+                    and not isinstance(peer.get("session_id"), bool)
+                    and peer["session_id"] > 0
+                }
+                if self.state.session_id:
+                    self._fallback_allowed_session_ids.add(self.state.session_id)
+            self._central_fallback = True
+
+        self.state.replace_peers([])
+        with self._reliability_lock:
+            for key, sender in list(self._outgoing_senders.items()):
+                if key[1].startswith("session:"):
+                    sender.failed = True
+                    self._outgoing_senders.pop(key, None)
+                    self._relay_targets.pop(key, None)
+                    self._relay_file_info.pop(key, None)
+                    self._relay_retry_counts.pop(key, None)
+            for key in list(self._incoming_receivers):
+                if key[1].startswith("session:"):
+                    self._incoming_receivers.pop(key, None)
+
+        try:
+            self.discovery.start()
+            self.discovery.send_broadcast_announce()
+        except OSError as exc:
+            print(f"[!] Could not start P2P discovery: {exc}")
 
     def _register_congestion_controlled_packet(
         self,
@@ -178,9 +602,27 @@ class SocketEngine:
         stream_id: int,
         message_text: str,
         target_session_id: Optional[int] = None,
+        event_id: Optional[str] = None,
+        event_timestamp: Optional[float] = None,
+        event_order: Optional[int] = None,
     ):
         """Send an encrypted chat message directly or through the central UDP relay."""
-        if self.coordinator:
+        if event_id is None or event_timestamp is None or event_order is None:
+            generated_id, generated_timestamp, generated_order = self.state.next_event_metadata()
+            event_id = event_id or generated_id
+            event_timestamp = generated_timestamp if event_timestamp is None else event_timestamp
+            event_order = generated_order if event_order is None else event_order
+        message_payload = b"\x00CHAT1" + json.dumps(
+            {
+                "text": message_text,
+                "event_id": event_id,
+                "timestamp": event_timestamp,
+                "event_order": event_order,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if self.using_central_server:
             if stream_id == 0:
                 target_session_id = 0
             elif target_session_id is None:
@@ -196,7 +638,7 @@ class SocketEngine:
                     target_session_id = target["session_id"]
             if target_session_id is None or (stream_id != 0 and target_session_id == 0):
                 raise ValueError("A valid online recipient is required for a private message")
-            encrypted_payload = self.crypto.encrypt(message_text.encode("utf-8"))
+            encrypted_payload = self.crypto.encrypt(message_payload)
             if target_session_id == 0:
                 with self.state._lock:
                     target_session_ids = [
@@ -225,7 +667,7 @@ class SocketEngine:
         packet = self._register_congestion_controlled_packet(
             sender,
             flags=FLAG_MSG,
-            payload=self.crypto.encrypt(message_text.encode("utf-8")),
+            payload=self.crypto.encrypt(message_payload),
             timeout=5.0,
         )
         self.send_raw(packet.pack(), (dest_ip, dest_port))
@@ -240,6 +682,9 @@ class SocketEngine:
         transfer_id: Optional[str] = None,
         filename: Optional[str] = None,
         target_session_id: Optional[int] = None,
+        event_id: Optional[str] = None,
+        event_timestamp: Optional[float] = None,
+        event_order: Optional[int] = None,
     ):
         """Send a file directly or through the central UDP relay."""
         metadata, chunks = FileTransferManager.prepare_file_for_sending(filepath)
@@ -248,10 +693,18 @@ class SocketEngine:
         if transfer_id:
             metadata["transfer_id"] = transfer_id
         metadata["chat_stream_id"] = chat_stream_id
+        if event_id is None or event_timestamp is None or event_order is None:
+            generated_id, generated_timestamp, generated_order = self.state.next_event_metadata()
+            event_id = event_id or generated_id
+            event_timestamp = generated_timestamp if event_timestamp is None else event_timestamp
+            event_order = generated_order if event_order is None else event_order
+        metadata["event_id"] = event_id
+        metadata["event_timestamp"] = event_timestamp
+        metadata["event_order"] = event_order
 
         relay_target_session_id = None
         sender_ip, sender_port = dest_ip, dest_port
-        if self.coordinator:
+        if self.using_central_server:
             if target_session_id is None:
                 with self.state._lock:
                     target = next(
@@ -358,6 +811,10 @@ class SocketEngine:
         while self.running:
             try:
                 raw_data, addr = self.sock.recvfrom(65535)
+            except ConnectionResetError:
+                if self.running:
+                    continue
+                break
             except OSError:
                 if self.running:
                     print("[!] UDP receive socket failed")
@@ -367,6 +824,8 @@ class SocketEngine:
             try:
                 sender_session_id = None
                 if raw_data.startswith(RELAY_PREFIX):
+                    if not self.using_central_server:
+                        continue
                     envelope = json.loads(raw_data[len(RELAY_PREFIX):].decode("utf-8"))
                     if not isinstance(envelope, dict) or envelope.get("type") != "deliver":
                         continue
@@ -375,10 +834,16 @@ class SocketEngine:
                     if addr != self._relay_endpoint:
                         continue
                 packet = Packet.unpack(raw_data)
+                if (
+                    self._central_fallback
+                    and not packet.flags & FLAG_DISCOV
+                    and packet.session_id not in self._fallback_allowed_session_ids
+                ):
+                    continue
                 self._dispatch_packet(packet, addr, sender_session_id)
             except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError, AttributeError) as exc:
                 print(f"[!] Invalid UDP packet from {addr[0]}:{addr[1]}: {exc}")
-                if self.coordinator and addr == self._relay_endpoint:
+                if self.using_central_server and addr == self._relay_endpoint:
                     self.coordinator.report_warning("invalid_packet")
 
     def _dispatch_packet(
@@ -390,7 +855,7 @@ class SocketEngine:
         sender_ip, sender_port = addr
 
         if packet.flags & FLAG_ACK:
-            if self.coordinator and sender_session_id is not None:
+            if self.using_central_server and sender_session_id is not None:
                 key = (packet.stream_id, f"session:{sender_session_id}", 0)
             else:
                 key = (packet.stream_id, sender_ip, sender_port)
@@ -407,6 +872,11 @@ class SocketEngine:
             try:
                 info = json.loads(packet.payload.decode("utf-8"))
                 username = info.get("username")
+                if (
+                    self._central_fallback
+                    and packet.session_id not in self._fallback_allowed_session_ids
+                ):
+                    return
                 if username and username != self.state.username:
                     udp_port = int(info.get("udp_port", sender_port))
                     if 1 <= udp_port <= 65535:
@@ -443,13 +913,46 @@ class SocketEngine:
             )
             for chunk in ready_chunks:
                 try:
-                    text = self.crypto.decrypt(chunk).decode("utf-8")
+                    plaintext = self.crypto.decrypt(chunk)
+                    event_id = None
+                    event_timestamp = None
+                    event_order = None
+                    if plaintext.startswith(b"\x00CHAT1"):
+                        event = json.loads(plaintext[len(b"\x00CHAT1"):].decode("utf-8"))
+                        if not isinstance(event, dict):
+                            raise ValueError("Invalid chat event")
+                        text = event.get("text")
+                        event_id = event.get("event_id")
+                        event_timestamp = event.get("timestamp")
+                        event_order = event.get("event_order")
+                        if (
+                            not isinstance(text, str)
+                            or not isinstance(event_id, str)
+                            or isinstance(event_timestamp, bool)
+                            or not isinstance(event_timestamp, (int, float))
+                            or not 0 <= event_timestamp <= 4102444800
+                            or isinstance(event_order, bool)
+                            or not isinstance(event_order, int)
+                            or event_order < 1
+                        ):
+                            raise ValueError("Invalid chat event metadata")
+                    else:
+                        text = plaintext.decode("utf-8")
                 except (ValueError, UnicodeDecodeError) as exc:
                     print(f"[!] Bỏ qua tin nhắn không giải mã được: {exc}")
-                    if self.coordinator:
+                    if self.using_central_server and self.coordinator:
                         self.coordinator.report_warning("decrypt_failure")
                     continue
-                self.state.add_message(packet.stream_id, sender_name, text)
+                self.state.add_message(
+                    packet.stream_id,
+                    sender_name,
+                    text,
+                    conversation_key=sender_name if packet.stream_id != 0 else None,
+                    event_id=event_id,
+                    timestamp=event_timestamp,
+                    event_order=event_order,
+                    server_synced=sender_session_id is not None,
+                )
         elif packet.flags & FLAG_FILE:
             for chunk in ready_chunks:
                 try:
@@ -462,7 +965,7 @@ class SocketEngine:
                     )
                 except (ValueError, KeyError, TypeError, OSError) as exc:
                     self._fail_incoming_file(packet.stream_id, exc)
-                    if self.coordinator:
+                    if self.using_central_server and self.coordinator:
                         self.coordinator.report_warning("file_decode_failure")
         else:
             return
@@ -474,7 +977,7 @@ class SocketEngine:
             ack_num=cumulative_ack,
             payload=encode_sack_blocks(sack_blocks),
         )
-        if sender_session_id is not None and self.coordinator:
+        if sender_session_id is not None and self.using_central_server:
             self._send_relay(ack, sender_session_id)
         else:
             self.send_raw(ack.pack(), addr)
@@ -486,7 +989,7 @@ class SocketEngine:
         file_info: Optional[dict] = None,
         retry_count: int = 0,
     ):
-        if not self.coordinator or not self._relay_endpoint:
+        if not self.using_central_server or not self._relay_endpoint:
             raise RuntimeError("UDP relay is not configured")
         envelope = {
             "type": "relay",
@@ -543,6 +1046,20 @@ class SocketEngine:
             self.stream_manager.register_incoming_file(stream_id, metadata)
             transfer_id = str(metadata.get("transfer_id", stream_id))
             chat_stream_id = int(metadata.get("chat_stream_id", 0))
+            event_timestamp = metadata.get("event_timestamp")
+            event_order = metadata.get("event_order")
+            event_id = metadata.get("event_id")
+            if (
+                isinstance(event_timestamp, bool)
+                or not isinstance(event_timestamp, (int, float))
+                or not 0 <= event_timestamp <= 4102444800
+                or isinstance(event_order, bool)
+                or not isinstance(event_order, int)
+                or event_order < 1
+                or not isinstance(event_id, str)
+                or not event_id
+            ):
+                event_id, event_timestamp, event_order = self.state.next_event_metadata()
             sender_name = (
                 self._peer_username_by_session(sender_session_id)
                 if sender_session_id is not None
@@ -554,6 +1071,12 @@ class SocketEngine:
                 metadata["filename"],
                 transfer_id,
                 "Đang nhận",
+                metadata["filesize"],
+                sender_name if chat_stream_id != 0 else None,
+                event_id=event_id,
+                timestamp=event_timestamp,
+                event_order=event_order,
+                server_synced=sender_session_id is not None,
             )
             self.state.update_file_progress(
                 file_id=transfer_id,
@@ -623,6 +1146,13 @@ class SocketEngine:
             with self._reliability_lock:
                 senders = list(self._outgoing_senders.items())
             for (stream_id, dest_ip, dest_port), sender in senders:
+                if sender.failed:
+                    with self._reliability_lock:
+                        self._outgoing_senders.pop((stream_id, dest_ip, dest_port), None)
+                        self._relay_targets.pop((stream_id, dest_ip, dest_port), None)
+                        self._relay_file_info.pop((stream_id, dest_ip, dest_port), None)
+                        self._relay_retry_counts.pop((stream_id, dest_ip, dest_port), None)
+                    continue
                 for packet in sender.get_packets_for_retransmission():
                     try:
                         key = (stream_id, dest_ip, dest_port)
@@ -640,7 +1170,7 @@ class SocketEngine:
                                     0,
                                 ) + 1
                                 retries_by_sequence[packet.seq_num] = retry_count
-                        if self.coordinator and target_session_id is not None:
+                        if self.using_central_server and target_session_id is not None:
                             self._send_relay(
                                 packet,
                                 target_session_id,

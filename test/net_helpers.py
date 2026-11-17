@@ -34,7 +34,7 @@ class Client:
     """One full client: ClientState + SocketEngine, logged in to `server`."""
 
     def __init__(self, server, username, download_dir, loss=0.0, seed=None,
-                 port=None):
+                 port=None, bind_host=None, discovery_port=9004):
         """`server` is a CentralServer, or a (host, tcp_port, relay_port) tuple."""
         host, tcp_port, relay_port = (
             (server.host, server.tcp_port, server.relay_port)
@@ -43,8 +43,9 @@ class Client:
         self.port = port or free_udp_port()
         self.engine = SocketEngine(
             state=self.state,
-            host="127.0.0.1" if host in ("0.0.0.0", "") else host,
+            host=bind_host or ("127.0.0.1" if host in ("0.0.0.0", "") else host),
             port=self.port,
+            discovery_port=discovery_port,
             server_host=host,
             server_tcp_port=tcp_port,
             server_udp_port=relay_port,

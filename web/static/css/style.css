@@ -30,7 +30,10 @@ body {
     background: #25262b;
     padding: 30px;
     border-radius: 8px;
-    width: 380px;
+    width: 440px;
+    max-width: calc(100vw - 32px);
+    max-height: calc(100vh - 32px);
+    overflow-y: auto;
     box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
     text-align: center;
 }
@@ -58,7 +61,8 @@ body {
     color: #c1c2c5;
 }
 
-.form-group input {
+.form-group input,
+.form-group select {
     width: 100%;
     padding: 10px;
     border-radius: 4px;
@@ -89,6 +93,11 @@ body {
     gap: 12px;
     padding: 20px;
     background: #2c2e33;
+}
+
+.user-profile #logout-btn {
+    margin-left: auto;
+    padding: 7px 10px;
 }
 
 .status-indicator {
@@ -158,6 +167,19 @@ body {
 .peer-endpoint {
     font-size: 11px;
     color: #909296;
+}
+
+.offline-peer-list .peer-item {
+    color: #adb5bd;
+}
+
+.peer-status {
+    font-size: 11px;
+    color: #868e96;
+}
+
+.offline-file-download {
+    margin-top: 8px;
 }
 
 /* File Transfers */

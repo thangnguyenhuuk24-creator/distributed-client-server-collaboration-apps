@@ -12,6 +12,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 body {
     margin: 0;
@@ -96,6 +97,14 @@ footer { padding: 18px 3px 0; color: #65758e; font-size: 10px; }
 .button:disabled { cursor: wait; opacity: .6; }
 .button.primary { border-color: #315c94; background: #1c3c63; color: #c5dcff; }
 .button.danger { min-height: 26px; padding: 4px 8px; color: #ffb1b1; }
+.setup-overlay { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 20px; background: rgba(5, 10, 21, .86); }
+.setup-card { width: min(440px, 100%); padding: 26px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: 0 24px 80px rgba(0, 0, 0, .45); }
+.setup-card h2 { margin-bottom: 10px; }
+.setup-card .muted { margin-bottom: 20px; font-size: 13px; }
+.setup-card label { display: block; margin-bottom: 7px; color: var(--muted); font-size: 12px; }
+.setup-card input { width: 100%; margin-bottom: 12px; padding: 11px 12px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); color: var(--text); font: inherit; }
+.setup-card button { width: 100%; min-height: 38px; }
+.setup-error { min-height: 17px; margin: 0 0 10px; color: #ff9a9a; font-size: 12px; }
 .endpoint-card > p span { color: #d6e7ff; font-variant-numeric: tabular-nums; }
 .messages-panel { margin-top: 16px; }
 .messages-panel .table-wrap { max-height: 330px; overflow: auto; }

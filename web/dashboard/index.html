@@ -15,7 +15,7 @@
                 <div class="brand-mark">N</div>
                 <div>
                     <p class="eyebrow">NETWORK APP · SELF-HOSTED LAN</p>
-                    <h1>Server dashboard</h1>
+                    <h1>Server dashboard · <span id="server-name-display">--</span></h1>
                 </div>
             </div>
             <div class="server-state">
@@ -31,7 +31,7 @@
             <section class="intro">
                 <div>
                     <p class="eyebrow">OPERATIONS OVERVIEW</p>
-                    <h2>Your Server.</h2>
+                    <h2 id="server-name-heading">Your Server.</h2>
                     <p class="muted">Presence and relay telemetry only. Message contents are never recorded here.</p>
                 </div>
                 <div class="uptime-panel">
@@ -60,6 +60,11 @@
                     <span>FILE DATAGRAMS FORWARDED</span>
                     <strong id="file-relays">0</strong>
                     <small>Since server start · includes chunks and retries</small>
+                </article>
+                <article class="metric-card">
+                    <span>OFFLINE EVENTS RECOVERED</span>
+                    <strong id="offline-events-recovered">0</strong>
+                    <small>Chat and file metadata synced after reconnect</small>
                 </article>
                 <article class="metric-card">
                     <span>GLOBAL / PRIVATE RELAYS</span>
@@ -184,6 +189,17 @@
 
             <footer>Local-only control panel · Refreshes every 2 seconds · Chat and file payloads are not stored; only relay metadata is shown</footer>
         </main>
+    </div>
+    <div id="server-name-modal" class="setup-overlay" hidden>
+        <form id="server-name-form" class="setup-card">
+            <p class="eyebrow">SERVER SETUP</p>
+            <h2>Name this server</h2>
+            <p class="muted">Server has started. Enter a name to enable account registration and login.</p>
+            <label for="server-name-input">Server name</label>
+            <input id="server-name-input" name="server_name" type="text" maxlength="64" required autofocus>
+            <p id="server-name-error" class="setup-error" role="alert"></p>
+            <button class="button primary" type="submit">Save server name</button>
+        </form>
     </div>
 </body>
 </html>

@@ -10,16 +10,22 @@ These fill the gaps left by the unit tests (steps 5, 6, 7, 10):
 Run:  python -m test.test_e2e_network      (takes about 1 minute)
 """
 
+import base64
+import json
 import os
+import socket
 import shutil
 import tempfile
 import threading
 import time
+import urllib.request
 import unittest
 
-from test.net_helpers import Client, sha256_of, start_server, wait_until
+from test.net_helpers import Client, free_udp_port, sha256_of, start_server, wait_until
 
+from core.protocol import FLAG_DISCOV, FLAG_FILE, Packet
 from core.state import private_stream_id
+from web.server import LocalAPIServer
 
 
 class EndToEndTest(unittest.TestCase):
@@ -176,6 +182,215 @@ class EndToEndTest(unittest.TestCase):
         t.join(timeout=20)
         self.assertFalse(t.is_alive(), "sender hung forever")
         self.assertIn(outcome.get("result"), ("TimeoutError", "ConnectionError"))
+
+    def test_07_clients_discover_and_message_each_other_after_server_stops(self):
+        discovery_port = free_udp_port()
+        clients = []
+        for username in ("alice", "bob", "charlie"):
+            client = Client(
+                self.server,
+                username,
+                os.path.join(self.tmp, username),
+                bind_host="0.0.0.0",
+                discovery_port=discovery_port,
+            )
+            clients.append(client)
+        self.clients.extend(clients)
+        alice, bob, charlie = clients
+
+        self.assertTrue(all(client.engine.using_central_server for client in clients))
+        self.server.stop()
+
+        self.assertTrue(wait_until(
+            lambda: all(
+                not client.engine.using_central_server
+                and client.state.status == "CONNECTED"
+                and client.engine.discovery.running
+                and client.engine.recv_thread.is_alive()
+                for client in clients
+            ),
+            10,
+        ), "clients did not switch to P2P after central server shutdown")
+        self.assertTrue(wait_until(
+            lambda: all(
+                all(client.peer(other.username) for other in clients if other is not client)
+                for client in clients
+            ),
+            15,
+        ), "clients did not discover each other after server shutdown")
+
+        rogue = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            rogue.sendto(
+                Packet(
+                    flags=FLAG_DISCOV,
+                    session_id=0xABCDEF01,
+                    payload=json.dumps({
+                        "username": "new-user",
+                        "udp_port": 29999,
+                    }).encode("utf-8"),
+                ).pack(),
+                ("127.0.0.1", bob.port),
+            )
+        finally:
+            rogue.close()
+        self.assertTrue(wait_until(
+            lambda: bob.peer("new-user") is None,
+            1,
+        ), "a client that did not join the central server was admitted during fallback")
+
+        peer = alice.peer("bob")
+        stream_id = private_stream_id(alice.session_id, bob.session_id)
+        alice.engine.send_message(
+            peer["ip"],
+            peer["port"],
+            stream_id,
+            "direct message after server shutdown",
+        )
+        self.assertTrue(wait_until(
+            lambda: len(bob.state.streams.get(stream_id, [])) == 1,
+            10,
+        ), "P2P message did not reach Bob")
+        self.assertEqual(
+            bob.state.streams[stream_id][0]["text"],
+            "direct message after server shutdown",
+        )
+        self.assertEqual(charlie.state.streams.get(stream_id, []), [])
+
+    def test_08_file_broadcast_fanout_preserves_order_for_every_client(self):
+        clients = []
+        apis = []
+        api_threads = []
+        release_bob = threading.Event()
+        bob_file_init_sent = threading.Event()
+        try:
+            for username in ("alice", "bob", "charlie"):
+                client = Client(
+                    self.server,
+                    username,
+                    os.path.join(self.tmp, username),
+                )
+                clients.append(client)
+                self.clients.append(client)
+            alice, bob, charlie = clients
+            self.assertTrue(wait_until(
+                lambda: all(
+                    all(client.peer(other.username) for other in clients if other is not client)
+                    for client in clients
+                )
+            ))
+
+            for client in clients:
+                api = LocalAPIServer(
+                    client.state,
+                    client.engine,
+                    port=0,
+                    history_db_path=os.path.join(self.tmp, f"{client.username}-history.sqlite3"),
+                )
+                thread = threading.Thread(target=api.start, daemon=True)
+                thread.start()
+                apis.append(api)
+                api_threads.append(thread)
+            self.assertTrue(wait_until(
+                lambda: all(api.httpd is not None and api.port != 0 for api in apis)
+            ))
+
+            send_raw = alice.engine.send_raw
+            paused = set()
+
+            def pause_bob_after_file_init(raw, address):
+                send_raw(raw, address)
+                if not raw.startswith(b"RLY1"):
+                    return
+                envelope = json.loads(raw[4:].decode("utf-8"))
+                if (
+                    envelope.get("type") != "relay"
+                    or envelope.get("target_session_id") != bob.session_id
+                ):
+                    return
+                packet = Packet.unpack(base64.b64decode(envelope["packet"]))
+                if packet.flags & FLAG_FILE and bob.session_id not in paused:
+                    paused.add(bob.session_id)
+                    bob_file_init_sent.set()
+                    release_bob.wait(timeout=10)
+
+            alice.engine.send_raw = pause_bob_after_file_init
+            upload_request = urllib.request.Request(
+                f"http://127.0.0.1:{apis[0].port}/api/send_file?stream_id=0",
+                data=b"file broadcast payload",
+                method="POST",
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "X-File-Name": "X.bin",
+                },
+            )
+            with urllib.request.urlopen(upload_request, timeout=3) as response:
+                self.assertEqual(response.status, 200)
+
+            self.assertTrue(bob_file_init_sent.wait(timeout=5))
+            self.assertTrue(wait_until(
+                lambda: any(
+                    message.get("filename") == "X.bin"
+                    for message in charlie.state.streams.get(0, [])
+                ),
+                timeout=5,
+            ), "Charlie did not see the file while Bob's transfer was still running")
+            file_event_id = next(
+                message["_event_id"]
+                for message in alice.state.streams[0]
+                if message.get("filename") == "X.bin"
+            )
+            file_timestamp = next(
+                message["timestamp"]
+                for message in alice.state.streams[0]
+                if message.get("filename") == "X.bin"
+            )
+
+            message_request = urllib.request.Request(
+                f"http://127.0.0.1:{apis[0].port}/api/send_message",
+                data=json.dumps({
+                    "stream_id": 0,
+                    "content": "message-after-file",
+                }).encode("utf-8"),
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(message_request, timeout=5) as response:
+                self.assertEqual(response.status, 200)
+            release_bob.set()
+
+            for client in clients:
+                self.assertTrue(wait_until(
+                    lambda client=client: any(
+                        message.get("text") == "message-after-file"
+                        for message in client.state.streams.get(0, [])
+                    ),
+                    timeout=10,
+                ))
+            for api, client in zip(apis, clients):
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{api.port}/api/messages?stream_id=0"
+                )
+                with urllib.request.urlopen(request, timeout=3) as response:
+                    messages = json.loads(response.read().decode("utf-8"))["messages"]
+                file_message = next(item for item in messages if item.get("filename") == "X.bin")
+                chat_message = next(
+                    item for item in messages if item.get("text") == "message-after-file"
+                )
+                self.assertLess(file_message["timestamp"], chat_message["timestamp"])
+                self.assertEqual(file_message["timestamp"], file_timestamp)
+                received_file = next(
+                    message["timestamp"]
+                    for message in client.state.streams[0]
+                    if message.get("_event_id") == file_event_id
+                )
+                self.assertEqual(file_message["timestamp"], received_file)
+        finally:
+            release_bob.set()
+            for api in apis:
+                api.stop()
+            for thread in api_threads:
+                thread.join(timeout=2)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 import json
+import os
 import socket
+import tempfile
 import time
 import urllib.request
 import unittest
@@ -105,6 +107,59 @@ class CentralDashboardTest(unittest.TestCase):
         self.assertEqual(self.server.get_dashboard_snapshot()["events"][0]["type"], "client_kicked")
         reader.close()
         udp_socket.close()
+
+    def test_04_running_server_can_be_named_from_dashboard_and_remembers_it(self):
+        with tempfile.TemporaryDirectory() as config_directory:
+            server = CentralServer(
+                host="127.0.0.1",
+                tcp_port=0,
+                relay_port=0,
+                server_name="",
+                require_auth=True,
+            )
+            server.start()
+            dashboard = CentralDashboardServer(
+                server,
+                host="127.0.0.1",
+                port=0,
+                config_directory=config_directory,
+            )
+            dashboard.start()
+            url = f"http://127.0.0.1:{dashboard.port}/api/server/name"
+            request = urllib.request.Request(
+                url,
+                data=json.dumps({"server_name": "After Start"}).encode("utf-8"),
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            try:
+                self.assertTrue(server.running)
+                self.assertFalse(server.get_dashboard_snapshot()["server_configured"])
+                with urllib.request.urlopen(request, timeout=3) as response:
+                    self.assertEqual(json.loads(response.read())["server_name"], "After Start")
+                snapshot = server.get_dashboard_snapshot()
+                self.assertEqual(snapshot["server_name"], "After Start")
+                self.assertTrue(snapshot["server_configured"])
+                config_path = os.path.join(
+                    config_directory,
+                    f"server_{server.tcp_port}_{server.relay_port}.json",
+                )
+                with open(config_path, "r", encoding="utf-8") as config_file:
+                    saved_config = json.load(config_file)
+                self.assertEqual(saved_config["host"], "127.0.0.1")
+                server.stop()
+                server.start()
+                self.assertEqual(
+                    CentralServer.load_saved_name(
+                        server.tcp_port,
+                        server.relay_port,
+                        config_directory,
+                    ),
+                    "After Start",
+                )
+            finally:
+                dashboard.stop()
+                server.stop()
 
 
 if __name__ == "__main__":
